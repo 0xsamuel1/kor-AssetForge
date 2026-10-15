@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -13,11 +14,12 @@ import (
 )
 
 type BatchProcessor struct {
-	db      *gorm.DB
-	queue   chan uint // batch IDs to process
-	workers int
-	mu      sync.Mutex
-	done    chan struct{}
+	db           *gorm.DB
+	queue        chan uint // batch IDs to process
+	workers      int
+	retryService *BatchRetryService
+	mu           sync.Mutex
+	done         chan struct{}
 }
 
 func NewBatchProcessor(db *gorm.DB, workers int) *BatchProcessor {
@@ -30,6 +32,13 @@ func NewBatchProcessor(db *gorm.DB, workers int) *BatchProcessor {
 		workers: workers,
 		done:    make(chan struct{}),
 	}
+}
+
+// SetRetryService attaches a retry service to the processor
+func (p *BatchProcessor) SetRetryService(rs *BatchRetryService) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.retryService = rs
 }
 
 // Start launches worker goroutines
@@ -140,8 +149,18 @@ func (p *BatchProcessor) processBatch(batchID uint) {
 		"operations":      string(resultsJSON),
 	})
 
-	// Remove from queue entry
-	p.db.Where("batch_id = ?", batchID).Delete(&models.BatchQueueEntry{})
+	// Check if failed batch can be automatically retried
+	retried := false
+	if finalStatus == models.BatchStatusFailed && p.retryService != nil && errDetails != "" {
+		if ok, err := p.retryService.ScheduleRetry(batchID, errors.New(errDetails)); err == nil && ok {
+			retried = true
+		}
+	}
+
+	// Remove from queue entry if not rescheduled for retry
+	if !retried {
+		p.db.Where("batch_id = ?", batchID).Delete(&models.BatchQueueEntry{})
+	}
 }
 
 // executeOperation processes a single batch operation

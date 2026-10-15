@@ -154,6 +154,9 @@ func InitDB() (*gorm.DB, error) {
 		&models.ReferralCode{},
 		&models.Referral{},
 		&models.ReferralReward{},
+		// Email delivery and tracking models (#372)
+		&models.EmailDelivery{},
+		&models.EmailSuppression{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to auto-migrate models: %w", err)
 	}

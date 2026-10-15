@@ -4,22 +4,35 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yourusername/kor-assetforge/apperrors"
+	"github.com/yourusername/kor-assetforge/config"
 	"github.com/yourusername/kor-assetforge/models"
 	"github.com/yourusername/kor-assetforge/services"
 	"gorm.io/gorm"
 )
 
 type BatchHandler struct {
-	db        *gorm.DB
-	processor *services.BatchProcessor
+	db           *gorm.DB
+	processor    *services.BatchProcessor
+	retryService *services.BatchRetryService
 }
 
 func NewBatchHandler(db *gorm.DB, processor *services.BatchProcessor) *BatchHandler {
-	return &BatchHandler{db: db, processor: processor}
+	retryService := services.NewBatchRetryService(db, processor, config.LoadBatchConfig())
+	return &BatchHandler{
+		db:           db,
+		processor:    processor,
+		retryService: retryService,
+	}
+}
+
+// SetRetryService overrides the default retry service
+func (h *BatchHandler) SetRetryService(rs *services.BatchRetryService) {
+	h.retryService = rs
 }
 
 // SubmitBatch enqueues a batch of operations for async processing
@@ -44,8 +57,9 @@ func (h *BatchHandler) SubmitBatch(c *gin.Context) {
 		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Batch must contain at least one operation"))
 		return
 	}
-	if len(req.Operations) > models.MaxBatchSize {
-		apperrors.AbortWithError(c, apperrors.NewBadRequestError(fmt.Sprintf("Batch cannot exceed %d operations", models.MaxBatchSize)))
+	maxBatchSize := config.GetMaxBatchSize()
+	if len(req.Operations) > maxBatchSize {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError(fmt.Sprintf("Batch size limit exceeded: maximum allowed is %d operations (received %d)", maxBatchSize, len(req.Operations))))
 		return
 	}
 
@@ -176,3 +190,49 @@ func (h *BatchHandler) CancelBatch(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Batch cancelled"})
 }
+
+// RetryBatch manually re-queues a failed, completed_with_errors, or rolled_back batch for processing
+// POST /batch/retry/:id or POST /batch/:id/retry
+func (h *BatchHandler) RetryBatch(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		apperrors.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	batchIDStr := c.Param("id")
+	var batchID uint
+	if _, err := fmt.Sscanf(batchIDStr, "%d", &batchID); err != nil || batchID == 0 {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Valid batch ID is required"))
+		return
+	}
+
+	var uid uint
+	if u, ok := userID.(uint); ok {
+		uid = u
+	}
+
+	batch, err := h.retryService.ManualRetry(batchID, uid)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			apperrors.AbortWithError(c, apperrors.NewNotFoundError("Batch not found"))
+			return
+		}
+		if strings.Contains(err.Error(), "access denied") {
+			apperrors.AbortWithError(c, apperrors.NewForbiddenError("Access denied"))
+			return
+		}
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError(err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, models.BatchRetryResponse{
+		BatchID:     batch.ID,
+		Status:      batch.Status,
+		RetryCount:  batch.RetryCount,
+		MaxRetries:  batch.MaxRetries,
+		ScheduledAt: batch.NextRetryAt,
+		Message:     "Batch queued for retry",
+	})
+}
+

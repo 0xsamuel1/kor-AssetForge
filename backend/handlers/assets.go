@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"github.com/yourusername/kor-assetforge/apperrors"
+	"github.com/yourusername/kor-assetforge/config"
 	"github.com/yourusername/kor-assetforge/middleware"
 	"github.com/yourusername/kor-assetforge/models"
 	"github.com/yourusername/kor-assetforge/services"
@@ -650,8 +651,9 @@ func (h *AssetHandler) ExecuteBatch(c *gin.Context) {
 		return
 	}
 
-	if len(req.Operations) > 50 {
-		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Batch cannot exceed 50 operations"))
+	maxBatchSize := config.GetMaxBatchSize()
+	if len(req.Operations) > maxBatchSize {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError(fmt.Sprintf("Batch size limit exceeded: maximum allowed is %d operations (received %d)", maxBatchSize, len(req.Operations))))
 		return
 	}
 
