@@ -333,6 +333,26 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		feePublicHandler := handlers.NewFeeAdminHandler(db, services.NewFeeService(db))
 		v1.GET("/fees/preview", feePublicHandler.PreviewFee)
 		v1.GET("/fees/active", feePublicHandler.GetActiveFee)
+
+		// Email template management routes (#373) — admin-only
+		emailTplHandler := handlers.NewEmailTemplateHandler(db)
+		emailTplGroup := protected.Group("/admin/email-templates")
+		emailTplGroup.Use(authMiddleware.RequireRole(models.RoleAdmin))
+		{
+			emailTplGroup.GET("", emailTplHandler.ListTemplates)
+			emailTplGroup.POST("", emailTplHandler.CreateTemplate)
+			emailTplGroup.POST("/preview", emailTplHandler.Preview)
+			emailTplGroup.POST("/render", emailTplHandler.RenderTemplate)
+			emailTplGroup.GET("/:id", emailTplHandler.GetTemplate)
+			emailTplGroup.PUT("/:id", emailTplHandler.UpdateTemplate)
+			emailTplGroup.DELETE("/:id", emailTplHandler.DeleteTemplate)
+			emailTplGroup.POST("/:id/activate", emailTplHandler.ActivateTemplate)
+			emailTplGroup.GET("/:id/versions", emailTplHandler.ListVersions)
+			emailTplGroup.GET("/:id/versions/diff", emailTplHandler.DiffVersions)
+			emailTplGroup.POST("/:id/versions/:version/rollback", emailTplHandler.RollbackToVersion)
+			emailTplGroup.GET("/:id/variants", emailTplHandler.ListVariants)
+			emailTplGroup.POST("/:id/variants", emailTplHandler.CreateVariant)
+		}
 	}
 
 	// API v2 routes
