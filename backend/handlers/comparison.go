@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/yourusername/kor-assetforge/services"
+	"github.com/yourusername/kor-assetforge/utils"
 	"gorm.io/gorm"
 )
 
@@ -69,12 +70,12 @@ func (h *ComparisonHandler) ListHistory(c *gin.Context) {
 // GET /api/v1/comparisons/history/:id
 func (h *ComparisonHandler) GetHistory(c *gin.Context) {
 	userID := currentUserID(c)
-	historyID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	historyID, err := utils.ParseUintParam(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid history id"})
 		return
 	}
-	record, result, err := h.Service.GetHistory(userID, uint(historyID))
+	record, result, err := h.Service.GetHistory(userID, historyID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "comparison not found"})
 		return

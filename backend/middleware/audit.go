@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	auditRetention = 90 * 24 * time.Hour
+	auditRetention = 7 * 365 * 24 * time.Hour
 	compressionAge = 30 * 24 * time.Hour
 )
 
