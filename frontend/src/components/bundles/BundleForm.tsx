@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/lib/toast";
 import { Package, Plus, X } from "lucide-react";
+import { ButtonSpinner } from "@/components/LoadingSpinner";
 
 interface BundleFormProps {
   wallet: StellarWallet;
@@ -111,7 +112,8 @@ export function BundleForm({ wallet, onCreated }: BundleFormProps) {
             </div>
           </div>
           <Button type="submit" disabled={isSubmitting} className="w-full">
-            {isSubmitting ? "Creating..." : "Create Bundle"}
+            {isSubmitting && <ButtonSpinner />}
+            {isSubmitting ? "Creating…" : "Create Bundle"}
           </Button>
         </form>
       </CardContent>

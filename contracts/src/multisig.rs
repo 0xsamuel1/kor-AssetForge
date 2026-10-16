@@ -47,9 +47,8 @@ impl MultiSigWalletContract {
         if env.storage().instance().has(&MultiSigKey::Admin) {
             panic!("already initialized");
         }
-        if threshold == 0 || threshold > owners.len() {
-            panic!("invalid threshold");
-        }
+        Self::require_distinct_owners(&owners);
+        Self::validate_threshold(threshold, owners.len());
         admin.require_auth();
 
         env.storage().instance().set(&MultiSigKey::Admin, &admin);
@@ -262,13 +261,116 @@ impl MultiSigWalletContract {
             .get(&MultiSigKey::Owners)
             .expect("not initialized");
 
-        if new_threshold == 0 || new_threshold > owners.len() {
-            panic!("invalid threshold");
-        }
+        Self::validate_threshold(new_threshold, owners.len());
 
         env.storage()
             .instance()
             .set(&MultiSigKey::Threshold, &new_threshold);
+    }
+
+    /// Add a new owner. Only the admin may call this.
+    ///
+    /// Adding owners can only make the current threshold easier to satisfy, so
+    /// the threshold itself is left untouched.
+    pub fn add_owner(env: Env, admin: Address, new_owner: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+
+        let mut owners: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&MultiSigKey::Owners)
+            .expect("not initialized");
+
+        if owners.contains(&new_owner) {
+            panic!("owner already exists");
+        }
+
+        owners.push_back(new_owner);
+        env.storage()
+            .instance()
+            .set(&MultiSigKey::Owners, &owners);
+    }
+
+    /// Remove an owner. Only the admin may call this.
+    ///
+    /// The owner set can never shrink below the configured threshold, otherwise
+    /// the wallet would become permanently unable to execute a proposal.
+    pub fn remove_owner(env: Env, admin: Address, owner: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+
+        let owners: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&MultiSigKey::Owners)
+            .expect("not initialized");
+        let threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&MultiSigKey::Threshold)
+            .expect("not initialized");
+
+        if !owners.contains(&owner) {
+            panic!("owner not found");
+        }
+
+        if owners.len() <= threshold {
+            panic!("cannot remove owner below threshold");
+        }
+
+        let mut updated: Vec<Address> = Vec::new(&env);
+        for i in 0..owners.len() {
+            let current = owners.get(i).unwrap();
+            if current != owner {
+                updated.push_back(current);
+            }
+        }
+
+        Self::validate_threshold(threshold, updated.len());
+
+        env.storage()
+            .instance()
+            .set(&MultiSigKey::Owners, &updated);
+    }
+
+    /// Validate a threshold against the current owner set size.
+    ///
+    /// Panics with a specific message so integrators can distinguish between the
+    /// two failure modes:
+    /// * `threshold must be greater than zero`
+    /// * `threshold cannot exceed number of owners`
+    fn validate_threshold(threshold: u32, owner_count: u32) {
+        if threshold == 0 {
+            panic!("threshold must be greater than zero");
+        }
+        if threshold > owner_count {
+            panic!("threshold cannot exceed number of owners");
+        }
+    }
+
+    /// Reject an owner list that contains the same address more than once.
+    /// Duplicates would silently inflate the owner count and allow a threshold
+    /// that looks safe but is satisfiable by a single address.
+    fn require_distinct_owners(owners: &Vec<Address>) {
+        for i in 0..owners.len() {
+            for j in (i + 1)..owners.len() {
+                if owners.get(i).unwrap() == owners.get(j).unwrap() {
+                    panic!("duplicate owner");
+                }
+            }
+        }
+    }
+
+    fn require_admin(env: &Env, addr: &Address) {
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&MultiSigKey::Admin)
+            .expect("not initialized");
+        if *addr != stored_admin {
+            panic!("admin only");
+        }
     }
 
     fn require_owner(env: &Env, addr: &Address) {
@@ -535,5 +637,288 @@ mod test {
         assert_eq!(client.get_proposal_expiry(), 0);
         client.set_proposal_expiry(&admin, &3600);
         assert_eq!(client.get_proposal_expiry(), 3600);
+    }
+
+    // -----------------------------------------------------------------------
+    // Threshold validation (#345)
+    // -----------------------------------------------------------------------
+
+    fn setup_with(env: &Env, owner_count: u32, threshold: u32) -> (Address, Address, Vec<Address>) {
+        let admin = Address::generate(env);
+        let contract_id = env.register_contract(None, MultiSigWalletContract);
+        let client = MultiSigWalletContractClient::new(env, &contract_id);
+
+        let mut owners = Vec::new(env);
+        for _ in 0..owner_count {
+            owners.push_back(Address::generate(env));
+        }
+        client.initialize(&admin, &owners, &threshold);
+
+        (contract_id, admin, owners)
+    }
+
+    #[test]
+    #[should_panic(expected = "threshold must be greater than zero")]
+    fn test_initialize_zero_threshold_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        setup_with(&env, 3, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "threshold cannot exceed number of owners")]
+    fn test_initialize_threshold_above_owners_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        setup_with(&env, 2, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "threshold cannot exceed number of owners")]
+    fn test_initialize_no_owners_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        setup_with(&env, 0, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate owner")]
+    fn test_initialize_duplicate_owner_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let owner = Address::generate(&env);
+        let contract_id = env.register_contract(None, MultiSigWalletContract);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        let mut owners = Vec::new(&env);
+        owners.push_back(owner.clone());
+        owners.push_back(owner);
+        client.initialize(&admin, &owners, &2);
+    }
+
+    #[test]
+    fn test_initialize_threshold_equal_to_owner_count() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, _admin, owners) = setup_with(&env, 2, 2);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        assert_eq!(client.get_threshold(), 2);
+        assert_eq!(client.get_owners().len(), 2);
+        assert_eq!(owners.len(), 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "threshold must be greater than zero")]
+    fn test_update_threshold_zero_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, admin, _owners) = setup_with(&env, 3, 2);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        client.update_threshold(&admin, &0);
+    }
+
+    #[test]
+    #[should_panic(expected = "threshold cannot exceed number of owners")]
+    fn test_update_threshold_above_owners_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, admin, _owners) = setup_with(&env, 3, 2);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        client.update_threshold(&admin, &4);
+    }
+
+    #[test]
+    fn test_update_threshold_rejects_invalid_without_mutating_state() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, admin, _owners) = setup_with(&env, 3, 2);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        assert!(client.try_update_threshold(&admin, &0).is_err());
+        assert_eq!(client.get_threshold(), 2);
+
+        assert!(client.try_update_threshold(&admin, &9).is_err());
+        assert_eq!(client.get_threshold(), 2);
+
+        client.update_threshold(&admin, &3);
+        assert_eq!(client.get_threshold(), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // Owner management with threshold invariants (#345)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_add_owner() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, admin, _owners) = setup_with(&env, 3, 3);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        let new_owner = Address::generate(&env);
+        client.add_owner(&admin, &new_owner);
+
+        assert_eq!(client.get_owners().len(), 4);
+        assert!(client.get_owners().contains(&new_owner));
+        assert_eq!(client.get_threshold(), 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "owner already exists")]
+    fn test_add_duplicate_owner_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, admin, owners) = setup_with(&env, 3, 2);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        client.add_owner(&admin, &owners.get(0).unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "admin only")]
+    fn test_add_owner_non_admin_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, _admin, owners) = setup_with(&env, 3, 2);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        client.add_owner(&owners.get(0).unwrap(), &Address::generate(&env));
+    }
+
+    #[test]
+    #[should_panic(expected = "admin only")]
+    fn test_remove_owner_non_admin_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, _admin, owners) = setup_with(&env, 3, 2);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        client.remove_owner(&owners.get(0).unwrap(), &owners.get(1).unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "owner not found")]
+    fn test_remove_unknown_owner_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, admin, _owners) = setup_with(&env, 3, 2);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        client.remove_owner(&admin, &Address::generate(&env));
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot remove owner below threshold")]
+    fn test_remove_owner_below_threshold_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        // 3 owners, threshold 2 -> removing one owner is fine, the second is not.
+        let (contract_id, admin, owners) = setup_with(&env, 3, 2);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        client.remove_owner(&admin, &owners.get(0).unwrap());
+        assert_eq!(client.get_owners().len(), 2);
+
+        client.remove_owner(&admin, &owners.get(1).unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot remove owner below threshold")]
+    fn test_remove_owner_when_all_owners_required_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, admin, owners) = setup_with(&env, 3, 3);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        client.remove_owner(&admin, &owners.get(0).unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot remove owner below threshold")]
+    fn test_remove_last_owner_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, admin, owners) = setup_with(&env, 1, 1);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        client.remove_owner(&admin, &owners.get(0).unwrap());
+    }
+
+    #[test]
+    fn test_remove_owner_then_raise_threshold() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, admin, owners) = setup_with(&env, 4, 2);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        client.remove_owner(&admin, &owners.get(0).unwrap());
+        assert_eq!(client.get_owners().len(), 3);
+
+        // Threshold may still be raised, but not above the remaining owners.
+        client.update_threshold(&admin, &3);
+        assert_eq!(client.get_threshold(), 3);
+
+        assert!(client.try_update_threshold(&admin, &4).is_err());
+        assert_eq!(client.get_threshold(), 3);
+    }
+
+    #[test]
+    fn test_removed_owner_loses_authority() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, admin, owners) = setup_with(&env, 4, 2);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        let removed = owners.get(0).unwrap();
+        let remaining = owners.get(1).unwrap();
+        client.remove_owner(&admin, &removed);
+
+        let recipient = Address::generate(&env);
+        let desc = String::from_str(&env, "after removal");
+        assert!(client.try_submit_proposal(&removed, &recipient, &100, &desc).is_err());
+
+        let pid = client.submit_proposal(&remaining, &recipient, &100, &desc);
+        assert_eq!(pid, 1);
+    }
+
+    #[test]
+    fn test_added_owner_can_sign() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (contract_id, admin, owners) = setup_with(&env, 2, 2);
+        let client = MultiSigWalletContractClient::new(&env, &contract_id);
+
+        let new_owner = Address::generate(&env);
+        client.add_owner(&admin, &new_owner);
+
+        let recipient = Address::generate(&env);
+        let desc = String::from_str(&env, "new owner signs");
+        let pid = client.submit_proposal(&owners.get(0).unwrap(), &recipient, &250, &desc);
+
+        client.sign_proposal(&owners.get(0).unwrap(), &pid);
+        client.sign_proposal(&new_owner, &pid);
+        client.execute_proposal(&owners.get(0).unwrap(), &pid);
+
+        assert!(client.get_proposal(&pid).unwrap().executed);
     }
 }

@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Image from "next/image";
 import { FractionalizationConfig } from "./FractionalizationWizard";
+import { CardGridSkeleton } from "@/components/LoadingSkeleton";
 
 interface Asset {
   id: number;
@@ -53,9 +55,7 @@ export function AssetSelectionStep({ onAssetSelected }: AssetSelectionStepProps)
 
   if (isLoading) {
     return (
-      <div className="flex justify-center py-12">
-        <p className="text-muted-foreground">Loading assets...</p>
-      </div>
+      <CardGridSkeleton count={4} className="lg:grid-cols-2" label="Loading assets" />
     );
   }
 
@@ -89,9 +89,12 @@ export function AssetSelectionStep({ onAssetSelected }: AssetSelectionStepProps)
               >
                 <div className="flex items-start gap-4">
                   {asset.image_url && (
-                    <img
+                    <Image
                       src={asset.image_url}
                       alt={asset.name}
+                      width={64}
+                      height={64}
+                      sizes="64px"
                       className="w-16 h-16 rounded object-cover"
                     />
                   )}

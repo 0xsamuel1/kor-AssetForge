@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/yourusername/kor-assetforge/config"
 	"github.com/yourusername/kor-assetforge/models"
 	"github.com/yourusername/kor-assetforge/services"
 	"github.com/yourusername/kor-assetforge/validator"
@@ -19,15 +20,22 @@ import (
 type KYCHandler struct {
 	db           *gorm.DB
 	provider     services.KYCProvider
+	amlProvider  services.AMLScreeningProvider
 	emailService services.EmailService
 }
 
-// NewKYCHandler constructs a KYCHandler. Pass nil for provider to use the mock.
-func NewKYCHandler(db *gorm.DB, provider services.KYCProvider, emailService services.EmailService) *KYCHandler {
+// NewKYCHandler constructs a KYCHandler. Pass nil for provider to use the
+// mock KYC provider, and nil for amlProvider to build one from
+// config.LoadComplianceConfig() (which falls back to NoopAMLProvider when
+// AML_PROVIDER is unset).
+func NewKYCHandler(db *gorm.DB, provider services.KYCProvider, emailService services.EmailService, amlProvider services.AMLScreeningProvider) *KYCHandler {
 	if provider == nil {
 		provider = services.NewMockKYCProvider()
 	}
-	return &KYCHandler{db: db, provider: provider, emailService: emailService}
+	if amlProvider == nil {
+		amlProvider = services.NewAMLScreeningProvider(config.LoadComplianceConfig())
+	}
+	return &KYCHandler{db: db, provider: provider, amlProvider: amlProvider, emailService: emailService}
 }
 
 // ---- request / response types -----------------------------------------------
@@ -52,6 +60,11 @@ type uploadDocumentRequest struct {
 
 type amlScreenRequest struct {
 	KYCRecordID uint `json:"kyc_record_id" binding:"required,gt=0"`
+}
+
+type amlReviewResolutionRequest struct {
+	Cleared     bool   `json:"cleared"`
+	ReviewNotes string `json:"review_notes" binding:"omitempty,no_html"`
 }
 
 type accreditedInvestorRequest struct {
@@ -131,12 +144,27 @@ func (h *KYCHandler) SubmitKYC(c *gin.Context) {
 	h.writeAuditLog(req.UserID, "kyc_submitted", "KYCRecord", record.ID,
 		map[string]interface{}{"provider_record_id": result.ProviderRecordID}, c.ClientIP())
 
-	c.JSON(http.StatusCreated, gin.H{
+	// AML screening runs automatically on submission rather than waiting for
+	// a separate manual call (#377). A flagged result moves the record to
+	// "review" instead of letting identity verification proceed to approval
+	// on its own; a provider error also routes to manual review rather than
+	// silently skipping the screen.
+	amlScreening, amlErr := h.runAMLScreening(&record, c.ClientIP())
+	if amlErr != nil {
+		Logger.Warn("automatic AML screening failed at submission; routed to manual review", zap.Error(amlErr))
+	}
+
+	resp := gin.H{
 		"message":            "KYC verification submitted successfully",
 		"kyc_record_id":      record.ID,
 		"provider_record_id": record.ProviderRecordID,
 		"status":             record.Status,
-	})
+	}
+	if amlScreening != nil {
+		resp["aml_screening_status"] = amlScreening.Status
+		resp["aml_risk_level"] = amlScreening.RiskLevel
+	}
+	c.JSON(http.StatusCreated, resp)
 }
 
 // GetKYCStatus handles GET /api/v1/kyc/status?user_id=<n>
@@ -291,37 +319,117 @@ func (h *KYCHandler) ScreenAML(c *gin.Context) {
 		return
 	}
 
-	result, err := h.provider.ScreenAML(kyc.FullName, kyc.Nationality)
+	screening, err := h.runAMLScreening(&kyc, c.ClientIP())
 	if err != nil {
 		Logger.Error("AML screening failed", zap.Error(err))
 		c.JSON(http.StatusBadGateway, gin.H{"error": "AML provider unavailable"})
 		return
 	}
 
+	c.JSON(http.StatusCreated, screening)
+}
+
+// ResolveAMLReview handles POST /api/v1/kyc/aml/review/:id
+// @Summary Resolve a flagged AML screening
+// @Description Manual-review decision on a flagged AMLScreening: clears it or confirms the match and rejects the KYC record.
+// @Tags kyc
+// @Accept json
+// @Produce json
+// @Param id path uint true "AMLScreening ID"
+// @Param resolution body amlReviewResolutionRequest true "Review resolution"
+// @Success 200 {object} models.AMLScreening
+// @Failure 400 {object} apperrors.ErrorResponse
+// @Failure 404 {object} apperrors.ErrorResponse
+// @Router /kyc/aml/review/{id} [post]
+func (h *KYCHandler) ResolveAMLReview(c *gin.Context) {
+	var screeningID uint
+	if _, err := fmt.Sscanf(c.Param("id"), "%d", &screeningID); err != nil || screeningID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	var req amlReviewResolutionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	validator.SanitizeStruct(&req)
+
+	var screening models.AMLScreening
+	if err := h.db.First(&screening, screeningID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "AML screening not found"})
+		return
+	}
+
+	var kyc models.KYCRecord
+	if err := h.db.First(&kyc, screening.KYCRecordID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "KYC record not found"})
+		return
+	}
+
+	newStatus := "flagged"
+	if req.Cleared {
+		newStatus = "clear"
+	}
+	if err := h.db.Model(&screening).Update("status", newStatus).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update AML screening"})
+		return
+	}
+
+	if req.Cleared {
+		h.db.Model(&kyc).Updates(map[string]interface{}{"aml_cleared": true})
+	} else {
+		h.db.Model(&kyc).Updates(map[string]interface{}{"aml_cleared": false, "status": models.KYCStatusRejected, "review_notes": req.ReviewNotes})
+	}
+
+	h.writeAuditLog(kyc.UserID, "aml_review_resolved", "AMLScreening", screening.ID,
+		map[string]interface{}{"cleared": req.Cleared, "notes": req.ReviewNotes}, c.ClientIP())
+
+	h.db.First(&screening, screeningID)
+	c.JSON(http.StatusOK, screening)
+}
+
+// runAMLScreening calls the configured AML provider for kyc, persists the
+// result, and updates kyc.AMLCleared / kyc.Status. Shared by the automatic
+// screen on submission and the manual POST /kyc/aml/screen endpoint. A
+// provider error or a flagged result both route the record to
+// KYCStatusReview rather than letting it proceed toward approval.
+func (h *KYCHandler) runAMLScreening(kyc *models.KYCRecord, clientIP string) (*models.AMLScreening, error) {
+	result, err := h.amlProvider.Screen(kyc.FullName, kyc.Nationality, kyc.DateOfBirth)
+	if err != nil {
+		h.db.Model(kyc).Update("status", models.KYCStatusReview)
+		h.writeAuditLog(kyc.UserID, "aml_screening_error", "KYCRecord", kyc.ID,
+			map[string]interface{}{"error": err.Error()}, clientIP)
+		return nil, err
+	}
+
 	matchesJSON, _ := json.Marshal(result.Matches)
 	now := result.ScreenedAt
 	screening := models.AMLScreening{
-		KYCRecordID: req.KYCRecordID,
+		KYCRecordID: kyc.ID,
 		ScreeningID: result.ScreeningID,
 		Status:      result.Status,
 		RiskLevel:   models.AMLRiskLevel(result.RiskLevel),
 		Matches:     string(matchesJSON),
 		ScreenedAt:  &now,
 	}
-
 	if err := h.db.Create(&screening).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save AML screening"})
-		return
+		return nil, fmt.Errorf("failed to save AML screening: %w", err)
 	}
 
-	if result.Status == "clear" {
-		h.db.Model(&kyc).Update("aml_cleared", true)
+	switch result.Status {
+	case "clear":
+		h.db.Model(kyc).Update("aml_cleared", true)
+	case "flagged":
+		// Flagged never auto-clears or auto-rejects -- it waits for a human
+		// decision via ResolveAMLReview.
+		h.db.Model(kyc).Updates(map[string]interface{}{"aml_cleared": false, "status": models.KYCStatusReview})
 	}
 
 	h.writeAuditLog(kyc.UserID, "aml_screened", "AMLScreening", screening.ID,
-		map[string]interface{}{"status": result.Status, "risk_level": result.RiskLevel}, c.ClientIP())
+		map[string]interface{}{"status": result.Status, "risk_level": result.RiskLevel}, clientIP)
 
-	c.JSON(http.StatusCreated, screening)
+	return &screening, nil
 }
 
 // VerifyAccreditedInvestor handles POST /api/v1/kyc/accredited

@@ -34,7 +34,7 @@ func ErrorHandler(debug bool) gin.HandlerFunc {
 		defer func() {
 			if rec := recover(); rec != nil {
 				appErr := Wrap(fmt.Errorf("%v", rec), CodeInternalServerError, "Unexpected server error", http.StatusInternalServerError)
-				IncrementErrorCounter(appErr.Code)
+				TrackGinError(c, appErr.Code)
 				requestID, _ := c.Get("request_id")
 
 				Logger.Error("Panic recovered",
@@ -59,7 +59,7 @@ func ErrorHandler(debug bool) gin.HandlerFunc {
 			appErr.Status = http.StatusInternalServerError
 		}
 
-		IncrementErrorCounter(appErr.Code)
+		TrackGinError(c, appErr.Code)
 		requestID, _ := c.Get("request_id")
 
 		Logger.Error("Request error",

@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"github.com/yourusername/kor-assetforge/apperrors"
+	"github.com/yourusername/kor-assetforge/config"
 	"github.com/yourusername/kor-assetforge/middleware"
 	"github.com/yourusername/kor-assetforge/models"
 	"github.com/yourusername/kor-assetforge/services"
@@ -23,21 +24,23 @@ import (
 )
 
 type AssetHandler struct {
-	db              *gorm.DB
-	stellarClient   *utils.StellarClient
-	redisClient     *redis.Client
-	emailService    services.EmailService
-	workflow        *services.WorkflowService
-	metadataService *services.MetadataService
+	db                *gorm.DB
+	stellarClient     *utils.StellarClient
+	redisClient       *redis.Client
+	emailService      services.EmailService
+	workflow          *services.WorkflowService
+	metadataService   *services.MetadataService
+	transferValidator *services.TransferValidator
 }
 
 func NewAssetHandler(db *gorm.DB, stellarClient *utils.StellarClient, redisClient *redis.Client, emailService services.EmailService, workflow ...*services.WorkflowService) *AssetHandler {
 	handler := &AssetHandler{
-		db:              db,
-		stellarClient:   stellarClient,
-		redisClient:     redisClient,
-		emailService:    emailService,
-		metadataService: services.NewMetadataService(db),
+		db:                db,
+		stellarClient:     stellarClient,
+		redisClient:       redisClient,
+		emailService:      emailService,
+		metadataService:   services.NewMetadataService(db),
+		transferValidator: services.NewTransferValidator(db),
 	}
 	if len(workflow) > 0 {
 		handler.workflow = workflow[0]
@@ -343,6 +346,21 @@ func (h *AssetHandler) ListAssetForSale(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Asset not found"})
 		return
 	}
+
+	// A seller not in good compliance standing cannot list, regardless of
+	// who ends up buying (#380).
+	if h.transferValidator != nil {
+		if err := h.transferValidator.ValidateSeller(req.SellerAddr); err != nil {
+			var violation *services.TransferRestrictionViolation
+			if errors.As(err, &violation) {
+				c.JSON(http.StatusForbidden, gin.H{"error": violation.Error()})
+				return
+			}
+			apperrors.AbortWithError(c, apperrors.Wrap(err, apperrors.CodeDatabaseError, "Failed to validate seller", http.StatusInternalServerError))
+			return
+		}
+	}
+
 	listingID := "listing_1"
 	listing := models.Listing{
 		AssetID:      req.AssetID,
@@ -401,6 +419,23 @@ func (h *AssetHandler) TransferAsset(c *gin.Context) {
 		return
 	}
 	c.Set("audit_asset_id", asset.ID)
+
+	// Enforce transfer restrictions before recording anything (#380) --
+	// whitelist/KYC/AML status on both parties, mirroring the on-chain
+	// checks in contracts/src/marketplace.rs. Previously this handler had
+	// no compliance check at all, so a restricted transfer could be
+	// recorded here even if the on-chain submission would later fail.
+	if h.transferValidator != nil {
+		if err := h.transferValidator.ValidateTransfer(req.FromAddress, req.ToAddress, req.AssetID, req.Amount); err != nil {
+			var violation *services.TransferRestrictionViolation
+			if errors.As(err, &violation) {
+				c.JSON(http.StatusForbidden, gin.H{"error": violation.Error()})
+				return
+			}
+			apperrors.AbortWithError(c, apperrors.Wrap(err, apperrors.CodeDatabaseError, "Failed to validate transfer", http.StatusInternalServerError))
+			return
+		}
+	}
 	if h.workflow != nil {
 		if requester, ok := c.Get("user_id"); ok {
 			if userID, ok := requester.(uint); ok {
@@ -586,9 +621,11 @@ func (h *AssetHandler) GetOraclePrice(c *gin.Context) {
 	}
 
 	oracleService := services.NewOraclePriceService()
-	feed, err := oracleService.FetchPrice(symbol)
+	// Strict fetch: rejects stale or unavailable price data instead of serving
+	// a value the contracts would refuse to settle against.
+	feed, err := oracleService.FetchPriceStrict(symbol)
 	if err != nil {
-		apperrors.AbortWithError(c, apperrors.NewExternalServiceError("Failed to fetch price from oracle", err))
+		apperrors.AbortWithError(c, apperrors.NewExternalServiceError("Failed to fetch a fresh price from oracle", err))
 		return
 	}
 
@@ -610,15 +647,15 @@ func (h *AssetHandler) GetAssetOraclePrice(c *gin.Context) {
 	}
 
 	oracleService := services.NewOraclePriceService()
-	feed, err := oracleService.FetchPrice(asset.Symbol)
+	feed, err := oracleService.FetchPriceStrict(asset.Symbol)
 	if err != nil {
-		apperrors.AbortWithError(c, apperrors.NewExternalServiceError("Failed to fetch price from oracle", err))
+		apperrors.AbortWithError(c, apperrors.NewExternalServiceError("Failed to fetch a fresh price from oracle", err))
 		return
 	}
 
 	oracleService.UpdateFeed(asset.ID, feed)
-	staleDuration := 1 * time.Hour
-	isStale := oracleService.IsStale(asset.ID, staleDuration)
+	// Zero means "use the configured threshold" (five minutes by default).
+	isStale := oracleService.IsStale(asset.ID, 0)
 
 	c.JSON(http.StatusOK, gin.H{
 		"asset_id":  asset.ID,
@@ -650,8 +687,9 @@ func (h *AssetHandler) ExecuteBatch(c *gin.Context) {
 		return
 	}
 
-	if len(req.Operations) > 50 {
-		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Batch cannot exceed 50 operations"))
+	maxBatchSize := config.GetMaxBatchSize()
+	if len(req.Operations) > maxBatchSize {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError(fmt.Sprintf("Batch size limit exceeded: maximum allowed is %d operations (received %d)", maxBatchSize, len(req.Operations))))
 		return
 	}
 

@@ -18,6 +18,7 @@ import (
 	"github.com/yourusername/kor-assetforge/handlers"
 	"github.com/yourusername/kor-assetforge/handlers/auth"
 	handlersv2 "github.com/yourusername/kor-assetforge/handlers/v2"
+	"github.com/yourusername/kor-assetforge/handlers/webhooks"
 	"github.com/yourusername/kor-assetforge/middleware"
 	"github.com/yourusername/kor-assetforge/models"
 	"github.com/yourusername/kor-assetforge/monitoring"
@@ -139,6 +140,8 @@ func main() {
 		handlers.RequestLogger(),
 		middleware.DetectLanguage(), // resolve request language for i18n (#185)
 		handlers.GlobalErrorHandler(),
+		handlers.MetricsMiddleware(),
+		handlers.BusinessMetricsMiddleware(nil),
 		middleware.RequestSizeLimiter(2<<20),
 		middleware.RequireJSON(),
 		middleware.RateLimit(20, time.Minute),
@@ -297,10 +300,22 @@ func main() {
 			middleware.HTTPCache(cacheManager, 1*time.Minute, "kor:oracle", nil),
 			assetHandler.GetAssetOraclePrice)
 
-		// Batch transaction routes (#106)
+		// Batch transaction routes (#106, #367, #370)
+		batchHandler := handlers.NewBatchHandler(db, nil)
 		v1.POST("/batch/execute",
+			middleware.BatchValidator(),
 			middleware.InvalidateOnWrite(cacheManager, "kor:asset:*"),
 			assetHandler.ExecuteBatch)
+		v1.POST("/batch/submit",
+			middleware.BatchValidator(),
+			authMiddleware.JWTAuth(),
+			batchHandler.SubmitBatch)
+		v1.POST("/batch/retry/:id",
+			authMiddleware.JWTAuth(),
+			batchHandler.RetryBatch)
+		v1.POST("/batch/:id/retry",
+			authMiddleware.JWTAuth(),
+			batchHandler.RetryBatch)
 		v1.GET("/batch/:id",
 			middleware.HTTPCache(cacheManager, 1*time.Minute, "kor:batch", nil),
 			assetHandler.GetBatchStatus)
@@ -329,6 +344,8 @@ func main() {
 		searchHandler := handlers.NewSearchHandler(searchBackend)
 		v1.GET("/search/assets", searchHandler.Search)
 		v1.GET("/search/suggestions", searchHandler.Suggest)
+		v1.GET("/search/autocomplete", searchHandler.Autocomplete)
+		v1.GET("/search/facets", searchHandler.Facets)
 		v1.GET("/search/analytics", searchHandler.SearchAnalytics)
 		v1.POST("/search/analytics/click", searchHandler.RecordSearchClick)
 
@@ -358,14 +375,22 @@ func main() {
 		}
 
 		// KYC / AML routes (#55)
-		kycHandler := handlers.NewKYCHandler(db, nil, emailService) // nil = mock provider
+		kycHandler := handlers.NewKYCHandler(db, nil, emailService, nil) // nil, nil = mock KYC provider, AML provider from env
 		v1.POST("/kyc/submit", kycHandler.SubmitKYC)
 		v1.GET("/kyc/status", kycHandler.GetKYCStatus)
 		v1.POST("/kyc/documents", kycHandler.UploadDocument)
 		v1.POST("/kyc/aml/screen", kycHandler.ScreenAML)
+		v1.POST("/kyc/aml/review/:id", kycHandler.ResolveAMLReview)
 		v1.POST("/kyc/accredited", kycHandler.VerifyAccreditedInvestor)
 		v1.GET("/kyc/audit", kycHandler.GetAuditLog)
 		v1.GET("/compliance/report", kycHandler.ComplianceReport)
+
+		// Beneficial ownership (UBO) routes (#379)
+		complianceHandler := handlers.NewComplianceHandler(db)
+		v1.POST("/compliance/ubo", complianceHandler.DeclareBeneficialOwner)
+		v1.GET("/compliance/ubo", complianceHandler.ListBeneficialOwners)
+		v1.POST("/compliance/ubo/:id/resolve", complianceHandler.ResolveUBOReview)
+		v1.POST("/compliance/ubo/documents", complianceHandler.UploadCorporateStructureDocument)
 
 		// Dispute resolution routes (#107)
 		disputeHandler := handlers.NewDisputeHandler(db)
@@ -403,10 +428,19 @@ func main() {
 		v1.GET("/liquidity/positions", liquidityHandler.GetLPPositions)
 		v1.GET("/liquidity/swaps", liquidityHandler.GetSwapHistory)
 
-		// Incoming webhook routes
+		// Incoming webhook routes (#372)
 		webhookHandler := handlers.NewWebhookHandler(db)
 		router.POST("/webhooks/stellar-events", webhookHandler.HandleStellarEvent)
 		router.POST("/webhooks/kyc", kycHandler.HandleKYCWebhook)
+
+		emailAnalytics := services.NewEmailAnalyticsService(db)
+		emailWebhookHandler := webhooks.NewEmailWebhookHandler(emailAnalytics, emailService.GetHealthChecker())
+		router.POST("/webhooks/email/sendgrid", emailWebhookHandler.HandleSendGrid)
+		router.POST("/webhooks/email/ses", emailWebhookHandler.HandleSES)
+		router.POST("/webhooks/email", emailWebhookHandler.HandleGeneric)
+		router.POST("/webhooks/email/generic", emailWebhookHandler.HandleGeneric)
+		v1.GET("/email/dashboard", emailWebhookHandler.GetDashboard)
+		v1.GET("/email/analytics", emailWebhookHandler.GetAnalytics)
 
 		// Outgoing webhook subscription routes (#126)
 		outgoingWebhookHandler := handlers.NewOutgoingWebhookHandler(db)
@@ -637,7 +671,10 @@ func main() {
 
 	// WebSocket routes (#54) — outside v1 group so the CSRF/JSON middleware
 	// does not block the Upgrade handshake.
-	wsHandler := handlers.NewWebSocketHandler()
+	wsHandler := handlers.NewWebSocketHandler(
+		getEnvOrDefault("JWT_SECRET", "your-super-secret-jwt-key-change-in-production"),
+		config.LoadWSRateLimitConfig(),
+	)
 	router.GET("/ws", wsHandler.HandleWS)
 	router.GET("/ws/stats", wsHandler.HandleWSStats)
 

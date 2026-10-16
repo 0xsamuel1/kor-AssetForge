@@ -4,18 +4,19 @@ import { Suspense, useState, useEffect, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Header } from "@/components/Header";
 import { SearchBar } from "@/components/SearchBar";
-import { FilterPanel } from "@/components/FilterPanel";
+import { SearchFilters } from "@/components/SearchFilters";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { assetApi, SearchResult } from "@/lib/asset-api";
-import { formatCurrency, truncateAddress } from "@/lib/utils";
+import { formatCurrency } from "@/lib/utils";
 import { StellarWallet, stellarService } from "@/lib/stellar";
 import {
-  Building2, TrendingUp, TrendingDown, Shield, Star,
-  MapPin, Loader2, Bookmark, BookmarkCheck,
+  Building2, TrendingUp, TrendingDown, Shield,
+  MapPin, Bookmark, BookmarkCheck,
 } from "lucide-react";
 import Link from "next/link";
+import { CardGridSkeleton, PageSkeleton } from "@/components/LoadingSkeleton";
 
 function SearchContent() {
   const router = useRouter();
@@ -64,8 +65,11 @@ function SearchContent() {
   }, []);
 
   useEffect(() => {
-    performSearch(query, filters);
-    updateUrl(query, filters);
+	const timer = window.setTimeout(() => {
+		void performSearch(query, filters);
+		updateUrl(query, filters);
+	}, 0);
+	return () => window.clearTimeout(timer);
   }, [query, filters, performSearch, updateUrl]);
 
   const handleSearch = (q: string) => {
@@ -125,16 +129,14 @@ function SearchContent() {
           {/* Sidebar Filters */}
           <aside className="w-64 shrink-0 hidden lg:block">
             <div className="sticky top-4">
-              <FilterPanel filters={filters} onFiltersChange={handleFiltersChange} />
+              <SearchFilters filters={filters} onFiltersChange={handleFiltersChange} />
             </div>
           </aside>
 
           {/* Results */}
           <div className="flex-1 min-w-0">
             {isLoading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-              </div>
+              <CardGridSkeleton count={6} className="lg:grid-cols-2 xl:grid-cols-3" label="Searching assets" />
             ) : results.length === 0 ? (
               <div className="text-center py-12">
                 <Building2 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
@@ -204,7 +206,7 @@ function SearchContent() {
 
 export default function SearchPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-background flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>}>
+    <Suspense fallback={<PageSkeleton label="Loading search" />}>
       <SearchContent />
     </Suspense>
   );

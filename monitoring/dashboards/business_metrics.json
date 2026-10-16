@@ -1,0 +1,45 @@
+{
+  "dashboard": {
+    "title": "kor-AssetForge Business KPIs",
+    "description": "Business metrics: DAU/MAU, transaction volumes, revenue (issue #319)",
+    "tags": ["kor-assetforge", "business"],
+    "timezone": "utc",
+    "panels": [
+      {
+        "title": "Active Users (DAU / MAU)",
+        "targets": [{ "expr": "active_users{window=\"dau\"}" }, { "expr": "active_users{window=\"mau\"}" }],
+        "type": "graph"
+      },
+      {
+        "title": "Assets Tokenized (per min by type)",
+        "targets": [{ "expr": "sum by (asset_type) (rate(assets_tokenized_total[5m]))" }],
+        "type": "graph"
+      },
+      {
+        "title": "Marketplace Orders (per min)",
+        "targets": [{ "expr": "sum by (side, status) (rate(marketplace_orders_total[5m]))" }],
+        "type": "graph"
+      },
+      {
+        "title": "Transaction Volume XLM (per min)",
+        "targets": [{ "expr": "sum by (kind) (rate(transaction_volume_xlm_total[5m]))" }],
+        "type": "graph"
+      },
+      {
+        "title": "Revenue XLM (per min by source)",
+        "targets": [{ "expr": "sum by (source) (rate(fees_collected_xlm_total[5m]))" }],
+        "type": "graph"
+      },
+      {
+        "title": "KYC Outcomes (per min)",
+        "targets": [{ "expr": "sum by (result) (rate(kyc_verifications_total[5m]))" }],
+        "type": "graph"
+      },
+      {
+        "title": "Webhook Deliveries (per min by status)",
+        "targets": [{ "expr": "sum by (status) (rate(webhook_deliveries_total[5m]))" }],
+        "type": "graph"
+      }
+    ]
+  }
+}

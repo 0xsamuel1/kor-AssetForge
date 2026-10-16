@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { WebSocketClient, WSStatus, WSMessage, WSMessageHandler } from "@/lib/websocket";
+import {
+  WebSocketClient,
+  WSStatus,
+  WSMessage,
+  WSMessageHandler,
+  WebSocketClientOptions,
+} from "@/lib/websocket";
 
 interface UseWebSocketOptions {
   /** WebSocket server URL. Pass null to disable. */
@@ -10,6 +16,10 @@ interface UseWebSocketOptions {
   autoConnect?: boolean;
   heartbeatInterval?: number;
   maxReconnectAttempts?: number;
+  accessToken?: string | (() => string | null);
+  refreshToken?: string | (() => string | null);
+  refreshUrl?: string;
+  onTokenRefresh?: WebSocketClientOptions["onTokenRefresh"];
 }
 
 interface UseWebSocketReturn {
@@ -43,6 +53,10 @@ export function useWebSocket({
   autoConnect = true,
   heartbeatInterval,
   maxReconnectAttempts,
+  accessToken,
+  refreshToken,
+  refreshUrl,
+  onTokenRefresh,
 }: UseWebSocketOptions): UseWebSocketReturn {
   const [status, setStatus] = useState<WSStatus>("disconnected");
   const [lastMessage, setLastMessage] = useState<WSMessage | null>(null);
@@ -56,6 +70,10 @@ export function useWebSocket({
       url,
       heartbeatInterval,
       maxReconnectAttempts,
+      accessToken,
+      refreshToken,
+      refreshUrl,
+      onTokenRefresh,
       onStatusChange: setStatus,
     });
 
@@ -71,7 +89,7 @@ export function useWebSocket({
       clientRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url]);
+  }, [url, accessToken, refreshToken, refreshUrl, onTokenRefresh]);
 
   const send = useCallback(<T,>(type: string, payload: T) => {
     clientRef.current?.send(type, payload);

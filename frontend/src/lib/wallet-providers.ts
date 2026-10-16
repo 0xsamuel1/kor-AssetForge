@@ -10,45 +10,26 @@
  * is what `isAvailable()` probes for.
  */
 
-import * as freighterApi from "@stellar/freighter-api";
-
 import type { StellarWallet } from "@/lib/stellar";
+import {
+  toWalletError,
+  WalletError,
+  type WalletProviderId,
+} from "@/lib/wallet/errors";
+import {
+  connectFreighter,
+  getFreighterAddressSilently,
+  isFreighterInstalled,
+  NETWORK_NAME,
+  NETWORK_PASSPHRASE,
+  signWithFreighter,
+} from "@/lib/wallet/freighter";
 
-/** Matches the network used by `stellarService`. */
-export const NETWORK_PASSPHRASE = "Test SDF Network ; September 2015";
-export const NETWORK_NAME = "testnet";
+// Re-exported so existing imports from this module keep working.
+export { NETWORK_NAME, NETWORK_PASSPHRASE, WalletError };
+export type { WalletErrorCode, WalletProviderId } from "@/lib/wallet/errors";
 
 const STORAGE_KEY = "kor-assetforge:wallet-provider";
-
-export type WalletProviderId =
-  | "freighter"
-  | "albedo"
-  | "lobstr"
-  | "xbull"
-  | "rabet";
-
-export type WalletErrorCode =
-  | "not-installed"
-  | "rejected"
-  | "unsupported"
-  | "unknown";
-
-/** Wallet failures we can explain to the user, rather than a raw exception. */
-export class WalletError extends Error {
-  readonly code: WalletErrorCode;
-  readonly providerId: WalletProviderId;
-
-  constructor(
-    code: WalletErrorCode,
-    providerId: WalletProviderId,
-    message: string,
-  ) {
-    super(message);
-    this.name = "WalletError";
-    this.code = code;
-    this.providerId = providerId;
-  }
-}
 
 export interface WalletProvider {
   id: WalletProviderId;
@@ -142,24 +123,6 @@ function waitForGlobal<T>(read: () => T | undefined, timeout = 600): Promise<T |
   });
 }
 
-/** Turns a thrown value into a user-facing wallet error. */
-function toWalletError(
-  providerId: WalletProviderId,
-  error: unknown,
-  fallback: string,
-): WalletError {
-  if (error instanceof WalletError) return error;
-
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  const isRejection = /reject|denied|cancel|declin/i.test(message);
-
-  return new WalletError(
-    isRejection ? "rejected" : "unknown",
-    providerId,
-    isRejection ? "Request rejected in the wallet." : message || fallback,
-  );
-}
-
 // ── Providers ────────────────────────────────────────────────────────────────
 
 const freighter: WalletProvider = {
@@ -171,42 +134,9 @@ const freighter: WalletProvider = {
   badgeClassName: "bg-indigo-500/15 text-indigo-600 dark:text-indigo-400",
   kind: "extension",
 
-  async isAvailable() {
-    try {
-      const { isConnected } = await freighterApi.isConnected();
-      return Boolean(isConnected);
-    } catch {
-      return false;
-    }
-  },
-
-  async connect() {
-    try {
-      // requestAccess prompts for permission the first time and returns the
-      // active account afterwards.
-      const { address, error } = await freighterApi.requestAccess();
-      if (error) throw new Error(error.message);
-      if (!address) {
-        throw new WalletError("rejected", "freighter", "No account was shared.");
-      }
-      return address;
-    } catch (error) {
-      throw toWalletError(
-        "freighter",
-        error,
-        "Could not connect to Freighter.",
-      );
-    }
-  },
-
-  async signTransaction(xdr, publicKey) {
-    const { signedTxXdr, error } = await freighterApi.signTransaction(xdr, {
-      networkPassphrase: NETWORK_PASSPHRASE,
-      address: publicKey,
-    });
-    if (error) throw toWalletError("freighter", new Error(error.message), "Signing failed.");
-    return signedTxXdr;
-  },
+  isAvailable: isFreighterInstalled,
+  connect: connectFreighter,
+  signTransaction: signWithFreighter,
 };
 
 const albedo: WalletProvider = {
@@ -236,7 +166,7 @@ const albedo: WalletProvider = {
       const { pubkey } = await api.publicKey({});
       return pubkey;
     } catch (error) {
-      throw toWalletError("albedo", error, "Could not connect to Albedo.");
+      throw toWalletError("albedo", error, "connect");
     }
   },
 
@@ -254,7 +184,7 @@ const albedo: WalletProvider = {
       });
       return signed_envelope_xdr;
     } catch (error) {
-      throw toWalletError("albedo", error, "Signing failed.");
+      throw toWalletError("albedo", error, "sign");
     }
   },
 };
@@ -294,7 +224,7 @@ const lobstr: WalletProvider = {
     try {
       return await api.getPublicKey();
     } catch (error) {
-      throw toWalletError("lobstr", error, "Could not connect to LOBSTR.");
+      throw toWalletError("lobstr", error, "connect");
     }
   },
 
@@ -311,7 +241,7 @@ const lobstr: WalletProvider = {
     try {
       return await api.signTransaction(xdr);
     } catch (error) {
-      throw toWalletError("lobstr", error, "Signing failed.");
+      throw toWalletError("lobstr", error, "sign");
     }
   },
 };
@@ -343,7 +273,7 @@ const xbull: WalletProvider = {
       await api.connect({ canRequestPublicKey: true, canRequestSign: true });
       return await api.getPublicKey();
     } catch (error) {
-      throw toWalletError("xbull", error, "Could not connect to xBull.");
+      throw toWalletError("xbull", error, "connect");
     }
   },
 
@@ -360,7 +290,7 @@ const xbull: WalletProvider = {
         networkPassphrase: NETWORK_PASSPHRASE,
       });
     } catch (error) {
-      throw toWalletError("xbull", error, "Signing failed.");
+      throw toWalletError("xbull", error, "sign");
     }
   },
 
@@ -396,7 +326,7 @@ const rabet: WalletProvider = {
       const { publicKey } = await api.connect();
       return publicKey;
     } catch (error) {
-      throw toWalletError("rabet", error, "Could not connect to Rabet.");
+      throw toWalletError("rabet", error, "connect");
     }
   },
 
@@ -410,7 +340,7 @@ const rabet: WalletProvider = {
       const result = await api.sign(xdr, NETWORK_NAME);
       return result.xdr;
     } catch (error) {
-      throw toWalletError("rabet", error, "Signing failed.");
+      throw toWalletError("rabet", error, "sign");
     }
   },
 
@@ -545,7 +475,13 @@ export async function restoreWalletConnection(): Promise<ConnectedWallet | null>
   if (!provider || !(await provider.isAvailable())) return null;
 
   try {
-    const publicKey = await provider.connect();
+    // Freighter can be queried without a popup; it returns null when locked,
+    // not yet allowed, or on the wrong network so the modal can explain why.
+    const publicKey =
+      id === "freighter"
+        ? await getFreighterAddressSilently()
+        : await provider.connect();
+    if (!publicKey) return null;
     return {
       publicKey,
       connected: true,

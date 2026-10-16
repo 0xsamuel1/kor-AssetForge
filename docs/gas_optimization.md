@@ -15,6 +15,8 @@ This document summarizes optimization choices applied across all smart contracts
 ### Batch Operations
 
 - **Bulk Transactions**: Consolidate multiple transfers into batch operations to reduce per-transaction overhead.
+- **Batch Size Limit Enforced**: Enforce a strict limit of 50 operations per batch (`MAX_BATCH_SIZE = 50`, configurable via `MAX_BATCH_SIZE` environment variable) across `/batch/execute` and `/batch/submit`. Requests exceeding 50 operations return HTTP 400 Bad Request to safeguard ledger limits, avoid gas spikes, and maintain deterministic execution.
+- **Batch Retry & Backoff**: Automatic retry scheduling for transient errors with exponential backoff (up to 3 retries) and manual retry support (`POST /batch/:id/retry`).
 - **Aggregate Events**: Emit single bulk events instead of per-item events (e.g., `bulk_transfer` with count rather than individual transfer events).
 - **Multi-Sig Consolidation**: Group validator approvals and execute once when threshold reached.
 

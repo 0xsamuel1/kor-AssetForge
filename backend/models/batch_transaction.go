@@ -36,3 +36,25 @@ type BatchOperationResult struct {
 	ResourceID     string `json:"resource_id,omitempty"`
 	PreviousActive *bool  `json:"previous_active,omitempty"`
 }
+
+// BatchRetryMetadata tracks retry attempts and backoff scheduling for a batch transaction
+type BatchRetryMetadata struct {
+	BatchID     uint       `json:"batch_id"`
+	RetryCount  int        `json:"retry_count"`
+	MaxRetries  int        `json:"max_retries"`
+	NextRetryAt *time.Time `json:"next_retry_at,omitempty"`
+	LastRetryAt *time.Time `json:"last_retry_at,omitempty"`
+	IsRetryable bool       `json:"is_retryable"`
+	LastError   string     `json:"last_error,omitempty"`
+	IsTransient bool       `json:"is_transient"`
+}
+
+// BatchRetryResponse represents the response when a retry is initiated
+type BatchRetryResponse struct {
+	BatchID     uint       `json:"batch_id"`
+	Status      string     `json:"status"`
+	RetryCount  int        `json:"retry_count"`
+	MaxRetries  int        `json:"max_retries"`
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
+	Message     string     `json:"message"`
+}

@@ -54,6 +54,40 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	}
 	return fallback
 }
+func envBool(key string, fallback bool) bool {
+	if val := os.Getenv(key); val != "" {
+		if b, err := strconv.ParseBool(val); err == nil {
+			return b
+		}
+	}
+	return fallback
+}
+
+// CacheConfig holds configuration for L1 in-memory and L2 Redis caching with resilience settings.
+type CacheConfig struct {
+	// L1 in-memory cache configuration (#315)
+	L1MaxEntries   int
+	L1MaxSizeBytes int64
+	L1DefaultTTL   time.Duration
+
+	// Redis resilience & fallback configuration (#313)
+	RedisFallbackEnabled         bool
+	RedisCircuitBreakerThreshold int           // consecutive failures to trip circuit
+	RedisCircuitBreakerTimeout   time.Duration // cool-off before entering half-open
+	RedisHealthCheckInterval     time.Duration
+}
+
+func LoadCacheConfig() CacheConfig {
+	return CacheConfig{
+		L1MaxEntries:                 envInt("CACHE_L1_MAX_ENTRIES", 10000),
+		L1MaxSizeBytes:               int64(envInt("CACHE_L1_MAX_SIZE_MB", 64)) * 1024 * 1024,
+		L1DefaultTTL:                 envDuration("CACHE_L1_DEFAULT_TTL", 5*time.Minute),
+		RedisFallbackEnabled:         envBool("CACHE_REDIS_FALLBACK_ENABLED", true),
+		RedisCircuitBreakerThreshold: envInt("CACHE_REDIS_CB_THRESHOLD", 5),
+		RedisCircuitBreakerTimeout:   envDuration("CACHE_REDIS_CB_TIMEOUT", 30*time.Second),
+		RedisHealthCheckInterval:     envDuration("CACHE_REDIS_HEALTH_INTERVAL", 15*time.Second),
+	}
+}
 
 // InitDB initializes the database connection, runs SQL migrations, then GORM AutoMigrate.
 func InitDB() (*gorm.DB, error) {
@@ -141,6 +175,10 @@ func InitDB() (*gorm.DB, error) {
 		&models.WatchlistItem{},
 		// User activity model (#161)
 		&models.UserActivity{},
+		// Recommendation history powers personalized search ranking.
+		&models.UserInteraction{},
+		&models.UserPreference{},
+		&models.AssetRecommendation{},
 		// Email template models (#163)
 		&models.EmailTemplate{},
 		&models.EmailTemplateVersion{},
@@ -154,6 +192,9 @@ func InitDB() (*gorm.DB, error) {
 		&models.ReferralCode{},
 		&models.Referral{},
 		&models.ReferralReward{},
+		// Email delivery and tracking models (#372)
+		&models.EmailDelivery{},
+		&models.EmailSuppression{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to auto-migrate models: %w", err)
 	}

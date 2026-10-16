@@ -8,6 +8,7 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
+  type PieLabelRenderProps,
 } from "recharts";
 
 export interface PieChartDataPoint {
@@ -37,19 +38,14 @@ const DEFAULT_COLORS = [
   "#84cc16",
 ];
 
-const renderCustomLabel = ({
-  cx,
-  cy,
-  midAngle,
-  outerRadius,
-  percent,
-}: {
-  cx: number;
-  cy: number;
-  midAngle: number;
-  outerRadius: number;
-  percent: number;
-}) => {
+const renderCustomLabel = (props: PieLabelRenderProps) => {
+  // Recharts types these as optional / number | string; they are always
+  // resolved to numbers by the time a label is rendered.
+  const cx = Number(props.cx ?? 0);
+  const cy = Number(props.cy ?? 0);
+  const midAngle = Number(props.midAngle ?? 0);
+  const outerRadius = Number(props.outerRadius ?? 0);
+  const percent = Number(props.percent ?? 0);
   if (percent < 0.04) return null;
   const RADIAN = Math.PI / 180;
   const radius = outerRadius * 1.15;
@@ -138,7 +134,7 @@ export const AssetPieChart: React.FC<AssetPieChartProps> = ({
             ))}
           </Pie>
           <Tooltip
-            formatter={(value: number) => value.toLocaleString()}
+            formatter={(value) => Number(value).toLocaleString()}
             contentStyle={{ fontSize: 12, borderRadius: 8 }}
           />
           {showLegend && <Legend wrapperStyle={{ fontSize: 12 }} />}

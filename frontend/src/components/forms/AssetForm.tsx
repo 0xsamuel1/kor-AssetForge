@@ -3,75 +3,78 @@
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { FormAlert, FormErrorSummary, FormField } from "@/components/forms/FormField"
 import { assetFormSchema, validateAssetCodeUnique, type AssetFormData } from "@/lib/validation-schemas"
-import { AlertCircle, Loader2 } from "lucide-react"
+import { submitFailedMessage, validationMessages } from "@/lib/validation/messages"
+import { useFormValidation } from "@/lib/validation/useFormValidation"
+import { Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
-
-interface FieldError {
-  field: string
-  message: string
-}
 
 interface AssetFormProps {
   onSubmit: (data: AssetFormData) => Promise<void>
   className?: string
 }
 
+const INITIAL_VALUES: AssetFormData = {
+  name: "",
+  code: "",
+  description: "",
+  totalSupply: "",
+  issuer: "",
+}
+
+const FIELD_LABELS: Record<keyof AssetFormData, string> = {
+  name: "Asset name",
+  code: "Asset code",
+  description: "Description",
+  totalSupply: "Total supply",
+  issuer: "Issuer public key",
+}
+
 export function AssetForm({ onSubmit, className }: AssetFormProps) {
-  const [formData, setFormData] = useState<AssetFormData>({
-    name: "",
-    code: "",
-    description: "",
-    totalSupply: "",
-    issuer: "",
-  })
-  const [errors, setErrors] = useState<FieldError[]>([])
+  const {
+    values,
+    errors,
+    submitted,
+    formError,
+    setFormError,
+    setValue,
+    markTouched,
+    setFieldError,
+    validate,
+    summaryRef,
+  } = useFormValidation(assetFormSchema, INITIAL_VALUES)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  const getFieldError = (field: string): string | undefined =>
-    errors.find((e) => e.field === field)?.message
+  const fieldProps = (field: keyof AssetFormData) => ({
+    value: values[field] ?? "",
+    onBlur: () => markTouched(field),
+  })
 
-  const setFieldError = (field: string, message: string) =>
-    setErrors((prev) => {
-      const filtered = prev.filter((e) => e.field !== field)
-      return [...filtered, { field, message }]
-    })
-
-  const clearFieldError = (field: string) =>
-    setErrors((prev) => prev.filter((e) => e.field !== field))
-
-  const handleChange = (field: keyof AssetFormData, value: string) => {
-    setFormData((prev) => ({ ...prev, [field]: value }))
-    clearFieldError(field)
-  }
+  const summary = submitted
+    ? (Object.keys(errors) as (keyof AssetFormData)[]).map((field) => ({
+        id: `asset-${field}`,
+        label: FIELD_LABELS[field],
+        message: errors[field] as string,
+      }))
+    : []
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    setErrors([])
-
-    const result = assetFormSchema.safeParse(formData)
-    if (!result.success) {
-      const fieldErrors = result.error.errors.map((err) => ({
-        field: err.path.join("."),
-        message: err.message,
-      }))
-      setErrors(fieldErrors)
-      return
-    }
+    const data = validate()
+    if (!data) return
 
     setIsSubmitting(true)
     try {
-      const isUnique = await validateAssetCodeUnique(formData.code)
+      const isUnique = await validateAssetCodeUnique(data.code)
       if (!isUnique) {
-        setFieldError("code", "Asset code already exists")
-        setIsSubmitting(false)
+        setFieldError("code", validationMessages.unique("Asset code"))
         return
       }
-      await onSubmit(result.data)
+      await onSubmit(data)
     } catch {
-      setErrors([{ field: "_form", message: "Failed to create asset. Please try again." }])
+      setFormError(submitFailedMessage("create the asset"))
     } finally {
       setIsSubmitting(false)
     }
@@ -84,95 +87,73 @@ export function AssetForm({ onSubmit, className }: AssetFormProps) {
         <CardDescription>Fill in the details to create a new asset on the Stellar network.</CardDescription>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {errors.find((e) => e.field === "_form") && (
-            <div className="flex items-center gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              {errors.find((e) => e.field === "_form")?.message}
-            </div>
-          )}
+        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+          <FormErrorSummary ref={summaryRef} errors={summary} />
+          <FormAlert message={formError} />
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="name" className={cn(getFieldError("name") && "text-destructive")}>
-                Asset Name
-              </Label>
+            <FormField id="asset-name" label="Asset Name" error={errors.name} required>
               <Input
-                id="name"
-                value={formData.name}
-                onChange={(e) => handleChange("name", e.target.value)}
+                {...fieldProps("name")}
+                onChange={(e) => setValue("name", e.target.value)}
                 placeholder="My Token"
-                aria-invalid={!!getFieldError("name")}
               />
-              {getFieldError("name") && (
-                <p className="text-xs text-destructive">{getFieldError("name")}</p>
-              )}
-            </div>
+            </FormField>
 
-            <div className="space-y-2">
-              <Label htmlFor="code" className={cn(getFieldError("code") && "text-destructive")}>
-                Asset Code
-              </Label>
+            <FormField
+              id="asset-code"
+              label="Asset Code"
+              error={errors.code}
+              hint="Up to 12 letters or numbers"
+              required
+            >
               <Input
-                id="code"
-                value={formData.code}
-                onChange={(e) => handleChange("code", e.target.value.toUpperCase())}
+                {...fieldProps("code")}
+                onChange={(e) => setValue("code", e.target.value.toUpperCase())}
                 placeholder="TOKEN"
                 maxLength={12}
-                aria-invalid={!!getFieldError("code")}
               />
-              {getFieldError("code") && (
-                <p className="text-xs text-destructive">{getFieldError("code")}</p>
-              )}
-            </div>
+            </FormField>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="description">Description</Label>
+          <FormField id="asset-description" label="Description" error={errors.description}>
             <textarea
-              id="description"
-              value={formData.description || ""}
-              onChange={(e) => handleChange("description", e.target.value)}
+              {...fieldProps("description")}
+              onChange={(e) => setValue("description", e.target.value)}
               placeholder="Describe your asset..."
               className="h-20 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 md:text-sm dark:bg-input/30"
               rows={3}
             />
-          </div>
+          </FormField>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="totalSupply" className={cn(getFieldError("totalSupply") && "text-destructive")}>
-                Total Supply
-              </Label>
+            <FormField id="asset-totalSupply" label="Total Supply" error={errors.totalSupply} required>
               <Input
-                id="totalSupply"
-                value={formData.totalSupply}
-                onChange={(e) => handleChange("totalSupply", e.target.value)}
+                {...fieldProps("totalSupply")}
+                onChange={(e) => setValue("totalSupply", e.target.value)}
                 placeholder="1000000"
-                aria-invalid={!!getFieldError("totalSupply")}
+                inputMode="decimal"
               />
-              {getFieldError("totalSupply") && (
-                <p className="text-xs text-destructive">{getFieldError("totalSupply")}</p>
-              )}
-            </div>
+            </FormField>
 
-            <div className="space-y-2">
-              <Label htmlFor="issuer">Issuer Public Key</Label>
+            <FormField
+              id="asset-issuer"
+              label="Issuer Public Key"
+              error={errors.issuer}
+              hint="Optional — a Stellar public key starting with G"
+            >
               <Input
-                id="issuer"
-                value={formData.issuer || ""}
-                onChange={(e) => handleChange("issuer", e.target.value)}
+                {...fieldProps("issuer")}
+                onChange={(e) => setValue("issuer", e.target.value.trim())}
                 placeholder="G..."
-                aria-invalid={!!getFieldError("issuer")}
+                spellCheck={false}
+                autoComplete="off"
               />
-              {getFieldError("issuer") && (
-                <p className="text-xs text-destructive">{getFieldError("issuer")}</p>
-              )}
-            </div>
+            </FormField>
           </div>
 
           <Button type="submit" className="w-full" disabled={isSubmitting}>
-            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
             {isSubmitting ? "Creating Asset..." : "Create Asset"}
           </Button>
         </form>

@@ -3,68 +3,84 @@
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { FormAlert, FormErrorSummary, FormField } from "@/components/forms/FormField"
 import { kycSchema, type KYCFormData } from "@/lib/validation-schemas"
-import { AlertCircle, Loader2 } from "lucide-react"
+import { submitFailedMessage } from "@/lib/validation/messages"
+import { useFormValidation } from "@/lib/validation/useFormValidation"
+import { Loader2 } from "lucide-react"
 import { cn } from "@/lib/utils"
-
-interface FieldError {
-  field: string
-  message: string
-}
 
 interface KYCFormProps {
   onSubmit: (data: KYCFormData) => Promise<void>
   className?: string
 }
 
+const INITIAL_VALUES: KYCFormData = {
+  firstName: "",
+  lastName: "",
+  email: "",
+  phone: "",
+  country: "",
+  address: "",
+  dateOfBirth: "",
+  idType: "passport",
+  idNumber: "",
+}
+
+const FIELD_LABELS: Record<keyof KYCFormData, string> = {
+  firstName: "First name",
+  lastName: "Last name",
+  email: "Email",
+  phone: "Phone",
+  country: "Country",
+  address: "Address",
+  dateOfBirth: "Date of birth",
+  idType: "ID type",
+  idNumber: "ID number",
+}
+
+type TextField = Exclude<keyof KYCFormData, "idType">
+
 export function KYCForm({ onSubmit, className }: KYCFormProps) {
-  const [formData, setFormData] = useState<KYCFormData>({
-    firstName: "",
-    lastName: "",
-    email: "",
-    phone: "",
-    country: "",
-    address: "",
-    dateOfBirth: "",
-    idType: "passport",
-    idNumber: "",
-  })
-  const [errors, setErrors] = useState<FieldError[]>([])
+  const {
+    values,
+    errors,
+    submitted,
+    formError,
+    setFormError,
+    setValue,
+    markTouched,
+    validate,
+    summaryRef,
+  } = useFormValidation(kycSchema, INITIAL_VALUES)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  const getFieldError = (field: string): string | undefined =>
-    errors.find((e) => e.field === field)?.message
+  const textProps = (field: TextField) => ({
+    value: values[field],
+    onChange: (e: React.ChangeEvent<HTMLInputElement>) => setValue(field, e.target.value),
+    onBlur: () => markTouched(field),
+  })
 
-  const clearFieldError = (field: string) =>
-    setErrors((prev) => prev.filter((e) => e.field !== field))
-
-  const handleChange = (field: keyof KYCFormData, value: string) => {
-    setFormData((prev) => ({ ...prev, [field]: value }))
-    clearFieldError(field)
-  }
+  const summary = submitted
+    ? (Object.keys(errors) as (keyof KYCFormData)[]).map((field) => ({
+        id: `kyc-${field}`,
+        label: FIELD_LABELS[field],
+        message: errors[field] as string,
+      }))
+    : []
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    setErrors([])
-
-    const result = kycSchema.safeParse(formData)
-    if (!result.success) {
-      const fieldErrors = result.error.errors.map((err) => ({
-        field: err.path.join("."),
-        message: err.message,
-      }))
-      setErrors(fieldErrors)
-      return
-    }
+    const data = validate()
+    if (!data) return
 
     setIsSubmitting(true)
     try {
-      await onSubmit(result.data)
+      await onSubmit(data)
     } catch {
-      setErrors([{ field: "_form", message: "Failed to submit KYC. Please try again." }])
+      setFormError(submitFailedMessage("submit your KYC details"))
     } finally {
       setIsSubmitting(false)
     }
@@ -77,150 +93,75 @@ export function KYCForm({ onSubmit, className }: KYCFormProps) {
         <CardDescription>Please provide your identity information for verification.</CardDescription>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {errors.find((e) => e.field === "_form") && (
-            <div className="flex items-center gap-2 rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              <AlertCircle className="h-4 w-4 shrink-0" />
-              {errors.find((e) => e.field === "_form")?.message}
-            </div>
-          )}
+        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+          <FormErrorSummary ref={summaryRef} errors={summary} />
+          <FormAlert message={formError} />
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="firstName" className={cn(getFieldError("firstName") && "text-destructive")}>
-                First Name
-              </Label>
-              <Input
-                id="firstName"
-                value={formData.firstName}
-                onChange={(e) => handleChange("firstName", e.target.value)}
-                aria-invalid={!!getFieldError("firstName")}
-              />
-              {getFieldError("firstName") && (
-                <p className="text-xs text-destructive">{getFieldError("firstName")}</p>
-              )}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="lastName" className={cn(getFieldError("lastName") && "text-destructive")}>
-                Last Name
-              </Label>
-              <Input
-                id="lastName"
-                value={formData.lastName}
-                onChange={(e) => handleChange("lastName", e.target.value)}
-                aria-invalid={!!getFieldError("lastName")}
-              />
-              {getFieldError("lastName") && (
-                <p className="text-xs text-destructive">{getFieldError("lastName")}</p>
-              )}
-            </div>
+            <FormField id="kyc-firstName" label="First Name" error={errors.firstName} required>
+              <Input {...textProps("firstName")} autoComplete="given-name" />
+            </FormField>
+            <FormField id="kyc-lastName" label="Last Name" error={errors.lastName} required>
+              <Input {...textProps("lastName")} autoComplete="family-name" />
+            </FormField>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="email" className={cn(getFieldError("email") && "text-destructive")}>
-                Email
-              </Label>
-              <Input
-                id="email"
-                type="email"
-                value={formData.email}
-                onChange={(e) => handleChange("email", e.target.value)}
-                aria-invalid={!!getFieldError("email")}
-              />
-              {getFieldError("email") && (
-                <p className="text-xs text-destructive">{getFieldError("email")}</p>
-              )}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="phone" className={cn(getFieldError("phone") && "text-destructive")}>
-                Phone
-              </Label>
-              <Input
-                id="phone"
-                type="tel"
-                value={formData.phone}
-                onChange={(e) => handleChange("phone", e.target.value)}
-                placeholder="+1234567890"
-                aria-invalid={!!getFieldError("phone")}
-              />
-              {getFieldError("phone") && (
-                <p className="text-xs text-destructive">{getFieldError("phone")}</p>
-              )}
-            </div>
+            <FormField id="kyc-email" label="Email" error={errors.email} required>
+              <Input {...textProps("email")} type="email" autoComplete="email" />
+            </FormField>
+            <FormField
+              id="kyc-phone"
+              label="Phone"
+              error={errors.phone}
+              hint="Include your country code"
+              required
+            >
+              <Input {...textProps("phone")} type="tel" autoComplete="tel" placeholder="+1234567890" />
+            </FormField>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="country">Country</Label>
-              <Input
-                id="country"
-                value={formData.country}
-                onChange={(e) => handleChange("country", e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="dateOfBirth" className={cn(getFieldError("dateOfBirth") && "text-destructive")}>
-                Date of Birth
-              </Label>
-              <Input
-                id="dateOfBirth"
-                type="date"
-                value={formData.dateOfBirth}
-                onChange={(e) => handleChange("dateOfBirth", e.target.value)}
-                aria-invalid={!!getFieldError("dateOfBirth")}
-              />
-              {getFieldError("dateOfBirth") && (
-                <p className="text-xs text-destructive">{getFieldError("dateOfBirth")}</p>
-              )}
-            </div>
+            <FormField id="kyc-country" label="Country" error={errors.country} required>
+              <Input {...textProps("country")} autoComplete="country-name" />
+            </FormField>
+            <FormField id="kyc-dateOfBirth" label="Date of Birth" error={errors.dateOfBirth} required>
+              <Input {...textProps("dateOfBirth")} type="date" autoComplete="bday" />
+            </FormField>
           </div>
 
-          <div className="space-y-2">
-            <Label htmlFor="address">Address</Label>
-            <Input
-              id="address"
-              value={formData.address}
-              onChange={(e) => handleChange("address", e.target.value)}
-            />
-          </div>
+          <FormField id="kyc-address" label="Address" error={errors.address} required>
+            <Input {...textProps("address")} autoComplete="street-address" />
+          </FormField>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
-              <Label>ID Type</Label>
-              <Select
-                value={formData.idType}
-                onValueChange={(value) => handleChange("idType", value as KYCFormData["idType"])}
-              >
-                <SelectTrigger>
+            {/* Select's root renders no DOM, so the trigger stays FormField's control. */}
+            <Select
+              value={values.idType}
+              onValueChange={(value) => {
+                setValue("idType", value as KYCFormData["idType"])
+                markTouched("idType")
+              }}
+            >
+              <FormField id="kyc-idType" label="ID Type" error={errors.idType} required>
+                <SelectTrigger className="w-full">
                   <SelectValue placeholder="Select ID type" />
                 </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="passport">Passport</SelectItem>
-                  <SelectItem value="drivers_license">Driver&apos;s License</SelectItem>
-                  <SelectItem value="national_id">National ID</SelectItem>
-                  <SelectItem value="other">Other</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="idNumber" className={cn(getFieldError("idNumber") && "text-destructive")}>
-                ID Number
-              </Label>
-              <Input
-                id="idNumber"
-                value={formData.idNumber}
-                onChange={(e) => handleChange("idNumber", e.target.value)}
-                aria-invalid={!!getFieldError("idNumber")}
-              />
-              {getFieldError("idNumber") && (
-                <p className="text-xs text-destructive">{getFieldError("idNumber")}</p>
-              )}
-            </div>
+              </FormField>
+              <SelectContent>
+                <SelectItem value="passport">Passport</SelectItem>
+                <SelectItem value="drivers_license">Driver&apos;s License</SelectItem>
+                <SelectItem value="national_id">National ID</SelectItem>
+                <SelectItem value="other">Other</SelectItem>
+              </SelectContent>
+            </Select>
+            <FormField id="kyc-idNumber" label="ID Number" error={errors.idNumber} required>
+              <Input {...textProps("idNumber")} autoComplete="off" />
+            </FormField>
           </div>
 
           <Button type="submit" className="w-full" disabled={isSubmitting}>
-            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+            {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
             {isSubmitting ? "Submitting..." : "Submit KYC"}
           </Button>
         </form>
