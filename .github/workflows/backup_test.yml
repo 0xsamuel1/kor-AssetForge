@@ -1,0 +1,86 @@
+name: Backup Restore Test
+
+on:
+  schedule:
+    # Monthly restore rehearsal on the first day of the month at 04:00 UTC.
+    - cron: "0 4 1 * *"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for the manual restore test"
+        required: false
+        default: "manual verification"
+  push:
+    paths:
+      - "scripts/backup_db.sh"
+      - "scripts/restore_backup.sh"
+      - "scripts/test_restore.sh"
+      - ".github/workflows/backup_test.yml"
+  pull_request:
+    paths:
+      - "scripts/backup_db.sh"
+      - "scripts/restore_backup.sh"
+      - "scripts/test_restore.sh"
+      - ".github/workflows/backup_test.yml"
+
+jobs:
+  restore-test:
+    name: Backup & Restore Rehearsal
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_DB: assetforge
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+        options: >-
+          --health-cmd "pg_isready -U postgres -d assetforge"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:password@localhost:5432/assetforge?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Seed source data
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE TABLE users (id serial PRIMARY KEY, email text NOT NULL);
+          CREATE TABLE assets (id serial PRIMARY KEY, symbol text NOT NULL);
+          CREATE TABLE listings (id serial PRIMARY KEY, asset_id int REFERENCES assets(id));
+          INSERT INTO users (email) VALUES ('drill@example.com');
+          INSERT INTO assets (symbol) VALUES ('GOLD'), ('SILVER');
+          INSERT INTO listings (asset_id) VALUES (1), (2);
+          SQL
+
+      - name: Run backup
+        run: |
+          export BACKUP_TEMP_DIR="$RUNNER_TEMP/backups"
+          chmod +x scripts/backup_db.sh
+          ./scripts/backup_db.sh
+
+      - name: Run automated restore rehearsal
+        run: |
+          chmod +x scripts/test_restore.sh scripts/restore_backup.sh
+          export BACKUP_TEMP_DIR="$RUNNER_TEMP/restore-test"
+          ./scripts/test_restore.sh
+
+      - name: Publish restore test summary
+        if: always()
+        run: |
+          {
+            echo "### Backup Restore Test"
+            echo ""
+            echo "- Status: ${{ job.status }}"
+            echo "- Trigger: ${{ github.event_name }}"
+            echo "- Commit: ${{ github.sha }}"
+          } >> "$GITHUB_STEP_SUMMARY"

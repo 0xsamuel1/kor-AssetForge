@@ -1,0 +1,57 @@
+# Development overrides for `docker compose up`.
+#
+# Docker Compose automatically merges this file with docker-compose.yml when you
+# run `docker compose up` without -f flags, so local development keeps working
+# unchanged. The production stack is separate: use docker-compose.prod.yml.
+#
+# These overrides are deliberately dev-friendly: published datastore ports,
+# verbose logging, no restart policies, and an Adminer UI. None of it is safe
+# for production.
+
+version: "3.8"
+
+services:
+  backend:
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: debug
+      # Disable production-only safeguards locally.
+      DB_REPLICA_FAILOVER_TO_PRIMARY: "true"
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  postgres:
+    ports:
+      - "5432:5432"
+    restart: "no"
+
+  redis:
+    ports:
+      - "6379:6379"
+    restart: "no"
+
+  elasticsearch:
+    restart: "no"
+
+  kibana:
+    restart: "no"
+
+  fluentd:
+    restart: "no"
+
+  # Lightweight database UI for local inspection (http://localhost:8081).
+  adminer:
+    image: adminer:4
+    container_name: assetforge-adminer
+    ports:
+      - "8081:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"

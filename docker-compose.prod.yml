@@ -1,0 +1,267 @@
+# Production-ready Docker Compose for kor-AssetForge.
+#
+# Usage:
+#   cp .env.prod.example .env.prod      # then edit values
+#   ./scripts/generate_secrets.sh       # or create ./secrets/*.txt manually
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
+#
+# Security-sensitive values (database/redis passwords, JWT secret, backup
+# encryption key) are provided as Docker secrets mounted at /run/secrets and
+# are never written into the image or committed to git.
+#
+# See docs/DOCKER_DEPLOYMENT.md for the full guide.
+
+name: assetforge-prod
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-assetforge}
+      POSTGRES_USER: ${POSTGRES_USER:-assetforge}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-assetforge} -d ${POSTGRES_DB:-assetforge}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    secrets:
+      - redis_password
+    command:
+      - sh
+      - -c
+      - exec redis-server --requirepass "$$(cat /run/secrets/redis_password)" --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$(cat /run/secrets/redis_password)\" ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    restart: always
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      - bootstrap.memory_lock=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 3G
+        reservations:
+          cpus: "0.5"
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  fluentd:
+    image: fluent/fluentd:v1.16-debian-1
+    restart: always
+    volumes:
+      - ./infrastructure/logging/fluentd.conf:/fluentd/etc/fluent.conf:ro
+      - fluentd_pos:/var/log
+    ports:
+      # Only expose the log forwarder on the loopback interface. The Docker
+      # fluentd logging driver talks to the host, not the compose network.
+      - "127.0.0.1:24224:24224"
+    networks:
+      - data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "fluentd --dry-run -c /fluentd/etc/fluent.conf"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.1
+    restart: always
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:5601/api/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: assetforge-api:${IMAGE_TAG:-latest}
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      fluentd:
+        condition: service_healthy
+    env_file:
+      - .env.prod
+    environment:
+      APP_ENV: production
+      SERVER_PORT: "8080"
+    secrets:
+      - postgres_password
+      - redis_password
+      - jwt_secret
+      - backup_encryption_key
+    # Compose the connection strings from files rather than plaintext env so the
+    # passwords never appear in `docker inspect` output.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        export DATABASE_URL="postgresql://${POSTGRES_USER:-assetforge}:$$(cat /run/secrets/postgres_password)@postgres:5432/${POSTGRES_DB:-assetforge}?sslmode=disable";
+        export REDIS_URL="redis://:$$(cat /run/secrets/redis_password)@redis:6379";
+        export JWT_SECRET="$$(cat /run/secrets/jwt_secret)";
+        export BACKUP_ENCRYPTION_KEY="$$(cat /run/secrets/backup_encryption_key)";
+        exec /root/main;
+    ports:
+      - "${API_PORT:-8080}:8080"
+    networks:
+      - edge
+      - data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: "localhost:24224"
+        fluentd-async: "true"
+        tag: "assetforge.backend"
+
+networks:
+  edge:
+    driver: bridge
+  data:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres_data:
+  redis_data:
+  elasticsearch_data:
+  fluentd_pos:
+
+secrets:
+  postgres_password:
+    file: ${SECRETS_DIR:-./secrets}/postgres_password.txt
+  redis_password:
+    file: ${SECRETS_DIR:-./secrets}/redis_password.txt
+  jwt_secret:
+    file: ${SECRETS_DIR:-./secrets}/jwt_secret.txt
+  backup_encryption_key:
+    file: ${SECRETS_DIR:-./secrets}/backup_encryption_key.txt

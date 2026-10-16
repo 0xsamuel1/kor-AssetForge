@@ -48,6 +48,7 @@ type SearchResult struct {
 	Facets           SearchFacets   `json:"facets"`
 	Took             float64        `json:"took_ms"` // query duration in milliseconds
 	AnalyticsEventID string         `json:"analytics_event_id,omitempty"`
+	RankingVariant   string         `json:"ranking_variant,omitempty"`
 }
 
 // SearchFacets carries aggregated filter counts for faceted navigation.

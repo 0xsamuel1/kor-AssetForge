@@ -79,11 +79,18 @@ kor-AssetForge is a decentralized platform for tokenizing and trading real-world
 
 ## Scalability
 
-- Horizontal scaling of API servers
+- Horizontal scaling of API servers (stateless, any instance serves any request)
 - Database read replicas for queries
 - Caching layer (Redis) for frequent reads
 - Event-driven architecture for async processing
 - Stellar's high throughput (1000+ TPS)
+
+See [SCALING_GUIDE.md](./SCALING_GUIDE.md) for horizontal scaling, connection
+pool sizing, and capacity planning; [LOAD_BALANCER_CONFIG.md](./LOAD_BALANCER_CONFIG.md)
+for load balancer setup; [DATABASE_REPLICATION.md](./DATABASE_REPLICATION.md) for
+read replicas; and [ARCHITECTURE_DIAGRAM.md](./ARCHITECTURE_DIAGRAM.md) for the
+scaled deployment topology. Kubernetes manifests are in
+[`kubernetes/deployment.yaml`](../kubernetes/deployment.yaml).
 
 ## Future Enhancements
 

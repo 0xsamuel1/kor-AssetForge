@@ -14,16 +14,21 @@ import (
 
 // SearchHandler provides asset search and suggestion endpoints.
 type SearchHandler struct {
-	backend   services.SearchBackend
-	analytics []services.SearchAnalyticsEvent // in-memory ring; replace with DB or queue in production
-	clicks    map[string]int
-	mu        sync.RWMutex
+	backend     services.SearchBackend
+	suggestions *services.SearchSuggestionService
+	analytics   []services.SearchAnalyticsEvent // in-memory ring; replace with DB or queue in production
+	clicks      map[string]int
+	mu          sync.RWMutex
 }
 
 // NewSearchHandler constructs a SearchHandler. Pass a DBSearchBackend or
 // ESSearchBackend (or any SearchBackend) as the backend.
 func NewSearchHandler(backend services.SearchBackend) *SearchHandler {
-	return &SearchHandler{backend: backend, clicks: make(map[string]int)}
+	return &SearchHandler{
+		backend:     backend,
+		suggestions: services.NewSearchSuggestionService(backend),
+		clicks:      make(map[string]int),
+	}
 }
 
 // Search handles GET /api/v1/search/assets
