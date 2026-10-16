@@ -1,0 +1,87 @@
+groups:
+  - name: assetforge-slo-alerts
+    interval: 15s
+    rules:
+      # SLO Target: 99.9% Availability (Error Budget Burn Rate)
+      - alert: SLOAvailabilityErrorBudgetBurningFast
+        expr: |
+          (
+            sum(rate(slo_http_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(slo_http_requests_total[5m]))
+          ) > 0.01
+        for: 2m
+        labels:
+          severity: critical
+          slo_type: availability
+          tier: tier-1
+        annotations:
+          summary: "Fast error budget burn (14.4x rate) threatening 99.9% availability"
+          description: "5xx error rate is currently {{ $value | humanizePercentage }}, consuming 10% of monthly error budget in 1 hour."
+          runbook_url: "docs/runbooks/SLA_VIOLATION_RUNBOOK.md#availability-burn"
+
+      - alert: SLOAvailabilityErrorBudgetBurningSlow
+        expr: |
+          (
+            sum(rate(slo_http_requests_total{status=~"5.."}[30m]))
+            /
+            sum(rate(slo_http_requests_total[30m]))
+          ) > 0.001
+        for: 15m
+        labels:
+          severity: warning
+          slo_type: availability
+          tier: tier-1
+        annotations:
+          summary: "Slow error budget burn threatening 99.9% monthly availability SLO"
+          description: "30-minute error rate is {{ $value | humanizePercentage }} (budget limit is 0.1%)."
+          runbook_url: "docs/runbooks/SLA_VIOLATION_RUNBOOK.md#availability-burn"
+
+      # SLO Target: p99 Latency < 500ms for Critical Endpoints
+      - alert: SLOLatencyP99Breached
+        expr: |
+          histogram_quantile(0.99, sum(rate(slo_http_request_duration_seconds_bucket[5m])) by (le, endpoint)) > 0.500
+        for: 3m
+        labels:
+          severity: critical
+          slo_type: latency
+          tier: tier-1
+        annotations:
+          summary: "p99 latency SLO breach on {{ $labels.endpoint }}"
+          description: "99th percentile latency on endpoint {{ $labels.endpoint }} is {{ $value | humanizeDuration }}, violating the 500ms SLO."
+          runbook_url: "docs/runbooks/SLA_VIOLATION_RUNBOOK.md#latency-breach"
+
+      # Cache Resilience & Redis Failover Alerts
+      - alert: RedisCircuitBreakerOpen
+        expr: cache_redis_circuit_breaker_state == 2
+        for: 1m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis circuit breaker is OPEN"
+          description: "Redis downstream dependencies failed consecutive health checks. Traffic has degraded gracefully to database."
+          runbook_url: "docs/runbooks/SLA_VIOLATION_RUNBOOK.md#redis-circuit-open"
+
+      - alert: HighCacheDegradationRate
+        expr: rate(cache_degraded_requests_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "High volume of cache-degraded requests"
+          description: "Cache fallback is serving {{ $value }} requests/sec directly from Postgres due to Redis unavailability."
+          runbook_url: "docs/runbooks/SLA_VIOLATION_RUNBOOK.md#cache-degradation"
+
+      # In-Memory L1 Cache Pressure
+      - alert: L1CacheMemoryPressure
+        expr: cache_l1_used_bytes / clamp_min(cache_l1_max_bytes, 1) > 0.90
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "In-memory L1 cache memory utilization exceeds 90%"
+          description: "L1 cache is near capacity. Check LRU eviction frequency and heap memory footprint."
+          runbook_url: "docs/runbooks/SLA_VIOLATION_RUNBOOK.md#cache-pressure"
