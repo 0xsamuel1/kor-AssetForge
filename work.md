@@ -1,65 +1,190 @@
-#119 Implement automated backup system
+#163 Create admin interface for email template customization
 Repo Avatar
 parkerwinner/kor-AssetForge
-Description:
-Add automated database and configuration backups.
-
-Summary: Basic backup script exists, needs automation.
+Description: Build system for managing email templates with variable substitution, preview functionality, and version control. Support multi-language templates.
 
 File Changes:
 
-Enhance scripts/backup_db.sh
-Add automated scheduling
-Implement point-in-time recovery
-Add backup verification
-Acceptance Criteria:
+backend/models/email_template.go - Create template models
+backend/handlers/email_templates.go - Add template management endpoints
+backend/services/email_service.go - Update to use dynamic templates
+backend/migrations/sql/0022_create_email_templates.up.sql - Create template tables
+Branch: feature/email-template-management
 
-Daily automated backups
-Backups stored securely
-Recovery tested monthly
-Backup retention policy enforced
+PR Title: Implement customizable email templates with multi-language support
 
-#130 Implement contract upgrade mechanism
+Additional Info: Add template validation, implement WYSIWYG editor support, add A/B testing for email templates.
+
+#167 Enable side-by-side comparison of multiple assets
 Repo Avatar
 parkerwinner/kor-AssetForge
-Description:
-Add safe upgrade path for deployed contracts.
-
-Summary: Upgradability contract exists but not tested in production.
+Description: Create endpoint for comparing key metrics, attributes, and performance of multiple assets. Support comparison of 2-10 assets simultaneously.
 
 File Changes:
 
-Test upgrade flow
-Add upgrade documentation
-Implement upgrade governance
-Add rollback mechanism
+backend/handlers/comparison.go - Create comparison endpoints
+backend/services/comparison_service.go - Implement comparison logic
+Branch: feature/asset-comparison
 
-#132 Implement asset insurance system
+PR Title: Add asset comparison tool for side-by-side analysis
+
+Additional Info: Add comparison result caching, implement comparison history, support custom comparison criteria.
+
+#169 Calculate and track asset performance indicators
 Repo Avatar
 parkerwinner/kor-AssetForge
-Description:
-Add insurance coverage for tokenized assets.
-
-Summary: No insurance features exist.
+Description: Implement system to calculate ROI, appreciation rate, dividend yield, and other performance metrics for assets. Provide historical performance tracking.
 
 File Changes:
 
-Create insurance models
-Add insurance contracts
-Implement claims process
-Add insurance UI
+backend/models/performance_metrics.go - Create metrics models
+backend/services/metrics_calculator.go - Implement calculations
+backend/handlers/analytics.go - Add metrics endpoints
+Branch: feature/asset-performance-metrics
 
-133 Implement ownership concentration limits
+PR Title: Add asset performance metrics and ROI tracking
+
+Additional Info: Implement background job for daily metric calculations, add benchmark comparisons, support custom date ranges.
+
+#170 Create user referral system with rewards
 Repo Avatar
 parkerwinner/kor-AssetForge
-Description:
-Prevent single entity from owning too much of an asset.
-
-Summary: No ownership limits enforced.
+Description: Build referral program allowing users to refer new users and earn rewards. Track referral chains, calculate commissions, and manage reward distribution.
 
 File Changes:
 
-Add ownership tracking
-Implement limit checks
-Add exemption system
-Add reporting
+backend/models/referral.go - Create referral models
+backend/handlers/referral.go - Add referral endpoints
+backend/services/referral_service.go - Implement referral logic
+backend/migrations/sql/0024_create_referrals.up.sql - Create referral tables
+Branch: feature/referral-program
+
+PR Title: Implement user referral program with reward tracking
+
+Additional Info: Add referral code generation, implement tiered rewards, add fraud detection for referral abuse.
+
+# Fixes
+
+github-advanced-security AI found potential problems 1 minute ago
+backend/handlers/analytics.go
+c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date (use YYYY-MM-DD)"})
+return
+}
+metric, err := h.MetricsCalculator.Calculate(uint(assetID), from, to)
+github-advanced-security commented 1 minute ago
+@github-advanced-security
+github-advanced-security
+bot
+1 minute ago
+High
+CodeQL / Incorrect conversion between integer types
+Incorrect conversion of an unsigned 64-bit integer from strconv.ParseUint to a lower bit size type uint without an upper bound check.
+
+Show more details
+
+@zachyo Reply...
+Dismissing the alert will mark this conversation as resolved.
+backend/handlers/analytics.go
+return
+}
+limit, \_ := strconv.Atoi(c.DefaultQuery("limit", "90"))
+metrics, err := h.MetricsCalculator.History(uint(assetID), limit)
+github-advanced-security commented 1 minute ago
+@github-advanced-security
+github-advanced-security
+bot
+1 minute ago
+High
+CodeQL / Incorrect conversion between integer types
+Incorrect conversion of an unsigned 64-bit integer from strconv.ParseUint to a lower bit size type uint without an upper bound check.
+
+Show more details
+
+@zachyo Reply...
+Dismissing the alert will mark this conversation as resolved.
+backend/handlers/analytics.go
+c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date (use YYYY-MM-DD)"})
+return
+}
+metric, err := h.MetricsCalculator.CalculateAndStore(uint(assetID), from, to)
+github-advanced-security commented 1 minute ago
+@github-advanced-security
+github-advanced-security
+bot
+1 minute ago
+High
+CodeQL / Incorrect conversion between integer types
+Incorrect conversion of an unsigned 64-bit integer from strconv.ParseUint to a lower bit size type uint without an upper bound check.
+
+Show more details
+
+@zachyo Reply...
+Dismissing the alert will mark this conversation as resolved.
+backend/handlers/analytics.go
+if req.PaidAt != nil {
+paidAt = \*req.PaidAt
+}
+dividend, err := h.MetricsCalculator.RecordDividend(uint(assetID), req.AmountUSD, req.Currency, req.Note, paidAt)
+github-advanced-security commented 1 minute ago
+@github-advanced-security
+github-advanced-security
+bot
+1 minute ago
+High
+CodeQL / Incorrect conversion between integer types
+Incorrect conversion of an unsigned 64-bit integer from strconv.ParseUint to a lower bit size type uint without an upper bound check.
+
+Show more details
+
+@zachyo Reply...
+Dismissing the alert will mark this conversation as resolved.
+backend/handlers/comparison.go
+c.JSON(http.StatusBadRequest, gin.H{"error": "invalid history id"})
+return
+}
+record, result, err := h.Service.GetHistory(userID, uint(historyID))
+github-advanced-security commented 1 minute ago
+@github-advanced-security
+github-advanced-security
+bot
+1 minute ago
+High
+CodeQL / Incorrect conversion between integer types
+Incorrect conversion of an unsigned 64-bit integer from strconv.ParseUint to a lower bit size type uint without an upper bound check.
+
+Show more details
+
+@zachyo Reply...
+Dismissing the alert will mark this conversation as resolved.
+backend/handlers/email_templates.go
+}
+
+    variant := models.EmailTemplateVariant{
+    	TemplateID: uint(templateID),
+
+github-advanced-security commented 1 minute ago
+@github-advanced-security
+github-advanced-security
+bot
+1 minute ago
+High
+CodeQL / Incorrect conversion between integer types
+Incorrect conversion of an unsigned 64-bit integer from strconv.ParseUint to a lower bit size type uint without an upper bound check.
+
+Show more details
+
+@zachyo Reply...
+Dismissing the alert will mark this conversation as resolved.
+backend/handlers/referral.go
+c.JSON(http.StatusBadRequest, gin.H{"error": "invalid referee id"})
+return
+}
+referral, err := h.Service.QualifyReferral(uint(refereeID))
+github-advanced-security commented 1 minute ago
+@github-advanced-security
+github-advanced-security
+bot
+1 minute ago
+High
+CodeQL / Incorrect conversion between integer types
+Incorrect conversion of an unsigned 64-bit integer from strconv.ParseUint to a lower bit size type uint without an upper bound check.

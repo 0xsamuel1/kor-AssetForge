@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"gorm.io/gorm"
 	"github.com/yourusername/kor-assetforge/models"
+	"gorm.io/gorm"
 )
 
 type TaxService struct {
@@ -63,17 +63,17 @@ func (ts *TaxService) GenerateTaxReport(userID uint, taxYear int) (*models.TaxRe
 	netGainLoss := totalGain - totalLoss
 
 	report := &models.TaxReport{
-		UserID:              userID,
-		TaxYear:             taxYear,
-		PeriodStart:         startDate,
-		PeriodEnd:           endDate,
-		TotalGainStroops:    totalGain,
-		TotalLossStroops:    totalLoss,
-		NetGainLossStroops:  netGainLoss,
-		TotalIncomeStroops:  totalIncome,
-		TransactionCount:    recordCount,
-		ReportStatus:        "draft",
-		GeneratedAt:         time.Now(),
+		UserID:             userID,
+		TaxYear:            taxYear,
+		PeriodStart:        startDate,
+		PeriodEnd:          endDate,
+		TotalGainStroops:   totalGain,
+		TotalLossStroops:   totalLoss,
+		NetGainLossStroops: netGainLoss,
+		TotalIncomeStroops: totalIncome,
+		TransactionCount:   recordCount,
+		ReportStatus:       "draft",
+		GeneratedAt:        time.Now(),
 	}
 
 	if err := ts.db.Create(report).Error; err != nil {
@@ -116,7 +116,7 @@ func (ts *TaxService) Generate1099Form(reportID uint, userID uint) (*models.Tax1
 
 	formData := map[string]interface{}{
 		"box_1a": report.TotalIncomeStroops,
-		"box_3":  report.TotalGainLossStroops,
+		"box_3":  report.NetGainLossStroops,
 		"box_5":  report.TotalWithheldTaxStroops,
 	}
 
@@ -217,7 +217,7 @@ func (ts *TaxService) UpdateTaxReportStatus(reportID uint, status string) error 
 }
 
 func (ts *TaxService) GetTaxSummary(userID uint, startDate, endDate time.Time) (map[string]interface{}, error) {
-	var totalGain, totalLoss, totalIncome, totalWithheld int64
+	var totalGain, totalLoss, totalWithheld int64
 
 	ts.db.Model(&models.TaxRecord{}).
 		Where("user_id = ? AND transaction_date >= ? AND transaction_date <= ? AND capital_gain_loss_stroops > ?",

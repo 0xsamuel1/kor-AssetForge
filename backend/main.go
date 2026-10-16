@@ -18,6 +18,7 @@ import (
 	"github.com/yourusername/kor-assetforge/handlers"
 	"github.com/yourusername/kor-assetforge/handlers/auth"
 	handlersv2 "github.com/yourusername/kor-assetforge/handlers/v2"
+	"github.com/yourusername/kor-assetforge/handlers/webhooks"
 	"github.com/yourusername/kor-assetforge/middleware"
 	"github.com/yourusername/kor-assetforge/models"
 	"github.com/yourusername/kor-assetforge/monitoring"
@@ -111,6 +112,16 @@ func main() {
 		BcryptCost:         getEnvIntOrDefault("BCRYPT_COST", 12),
 	}
 	emailService := services.NewEmailServiceFromEnv()
+	reportScheduler := services.NewReportSchedulerService(db, emailService)
+	if err := reportScheduler.Start(context.Background()); err != nil {
+		log.Printf("Warning: report scheduler failed to start: %v", err)
+	}
+	tracerProvider, err := monitoring.InitializeTracing(context.Background(), "kor-assetforge-api", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	if err != nil {
+		log.Printf("Warning: tracing disabled: %v", err)
+	} else {
+		defer monitoring.ShutdownTracing(context.Background(), tracerProvider)
+	}
 	authHandler := auth.NewAuthHandler(db, authConfig, emailService)
 	authMiddleware := auth.NewAuthMiddleware(authConfig.JWTSecret)
 	authRateLimiter := auth.NewAuthRateLimiter(rate.Limit(5.0/60.0), 10)
@@ -124,8 +135,10 @@ func main() {
 
 	// Use custom enhanced middleware
 	router.Use(
-		middleware.TracingMiddleware(),
+		middleware.VersionNegotiation(),
+		middleware.TracingMiddleware("kor-assetforge-api"),
 		handlers.RequestLogger(),
+		middleware.DetectLanguage(), // resolve request language for i18n (#185)
 		handlers.GlobalErrorHandler(),
 		handlers.MetricsMiddleware(),
 		handlers.BusinessMetricsMiddleware(nil),
@@ -154,6 +167,7 @@ func main() {
 
 	// Swagger documentation
 	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+	router.GET("/api/version/migration-guide", middleware.MigrationGuide)
 
 	// Cache metrics
 	router.GET("/metrics/cache", middleware.CacheMetricsHandler(cacheManager))
@@ -174,6 +188,15 @@ func main() {
 			authGroup.POST("/reset-password", authHandler.ResetPassword)
 		}
 
+		// OAuth social login routes (#183)
+		oauthService := services.NewOAuthService()
+		oauthHandler := auth.NewOAuthHandler(db, authConfig, oauthService)
+		oauthGroup := v1.Group("/auth/oauth")
+		{
+			oauthGroup.GET("/:provider/url", oauthHandler.GetAuthURL)
+			oauthGroup.POST("/:provider/callback", oauthHandler.Callback)
+		}
+
 		// Protected user routes
 		protected := v1.Group("")
 		protected.Use(authMiddleware.JWTAuth())
@@ -188,6 +211,15 @@ func main() {
 			protected.POST("/auth/2fa/verify", authHandler.Verify2FA)
 			protected.POST("/auth/2fa/disable", authHandler.Disable2FA)
 
+			// 2FA recovery code routes (#182)
+			protected.POST("/auth/2fa/recovery-codes", authHandler.GenerateRecoveryCodes)
+			protected.GET("/auth/2fa/recovery-codes", authHandler.GetRecoveryCodesStatus)
+
+			// OAuth account linking routes (#183)
+			protected.GET("/auth/oauth/linked", oauthHandler.ListLinkedAccounts)
+			protected.POST("/auth/oauth/:provider/link", oauthHandler.LinkAccount)
+			protected.DELETE("/auth/oauth/:provider/unlink", oauthHandler.UnlinkAccount)
+
 			// Admin-only routes
 			{
 				// Dispute admin endpoints — handlers declared below, referenced via closures
@@ -201,11 +233,37 @@ func main() {
 				adminGroup.POST("/staking/distribute", func(c *gin.Context) {
 					handlers.NewStakingHandler(db).DistributeRewards(c)
 				})
+
+				// Fee distribution admin endpoints (#181)
+				feeDistributionHandler := handlers.NewFeeDistributionAdminHandler(db)
+				feeDistributionAdmin := adminGroup.Group("/fee-distribution")
+				{
+					feeDistributionAdmin.POST("/rules", feeDistributionHandler.CreateRule)
+					feeDistributionAdmin.GET("/rules", feeDistributionHandler.ListRules)
+					feeDistributionAdmin.POST("/rules/:id/activate", feeDistributionHandler.ActivateRule)
+					feeDistributionAdmin.POST("/runs", feeDistributionHandler.RunDistribution)
+					feeDistributionAdmin.GET("/runs", feeDistributionHandler.ListRuns)
+					feeDistributionAdmin.GET("/runs/:id", feeDistributionHandler.GetRun)
+				}
+
+				// Dynamic fee configuration admin endpoints (#177)
+				feeService := services.NewFeeService(db)
+				feeAdminHandler := handlers.NewFeeAdminHandler(db, feeService)
+				feeAdminGroup := adminGroup.Group("/fees")
+				{
+					feeAdminGroup.POST("", feeAdminHandler.CreateFeeConfig)
+					feeAdminGroup.GET("", feeAdminHandler.ListFeeConfigs)
+					feeAdminGroup.GET("/:id", feeAdminHandler.GetFeeConfig)
+					feeAdminGroup.PUT("/:id", feeAdminHandler.UpdateFeeConfig)
+					feeAdminGroup.DELETE("/:id", feeAdminHandler.DeactivateFeeConfig)
+					feeAdminGroup.GET("/:id/audit", feeAdminHandler.GetFeeAuditLog)
+				}
 			}
 		}
 
 		// 2FA verification during login (unauthenticated)
 		v1.POST("/auth/2fa/login", authHandler.LoginWith2FA)
+		v1.POST("/auth/2fa/recovery-codes/login", authHandler.LoginWithRecoveryCode)
 
 		// Asset routes (with write-through cache invalidation)
 		workflowService := services.NewWorkflowService(db, emailService)
@@ -242,10 +300,22 @@ func main() {
 			middleware.HTTPCache(cacheManager, 1*time.Minute, "kor:oracle", nil),
 			assetHandler.GetAssetOraclePrice)
 
-		// Batch transaction routes (#106)
+		// Batch transaction routes (#106, #367, #370)
+		batchHandler := handlers.NewBatchHandler(db, nil)
 		v1.POST("/batch/execute",
+			middleware.BatchValidator(),
 			middleware.InvalidateOnWrite(cacheManager, "kor:asset:*"),
 			assetHandler.ExecuteBatch)
+		v1.POST("/batch/submit",
+			middleware.BatchValidator(),
+			authMiddleware.JWTAuth(),
+			batchHandler.SubmitBatch)
+		v1.POST("/batch/retry/:id",
+			authMiddleware.JWTAuth(),
+			batchHandler.RetryBatch)
+		v1.POST("/batch/:id/retry",
+			authMiddleware.JWTAuth(),
+			batchHandler.RetryBatch)
 		v1.GET("/batch/:id",
 			middleware.HTTPCache(cacheManager, 1*time.Minute, "kor:batch", nil),
 			assetHandler.GetBatchStatus)
@@ -271,6 +341,8 @@ func main() {
 		searchHandler := handlers.NewSearchHandler(searchBackend)
 		v1.GET("/search/assets", searchHandler.Search)
 		v1.GET("/search/suggestions", searchHandler.Suggest)
+		v1.GET("/search/autocomplete", searchHandler.Autocomplete)
+		v1.GET("/search/facets", searchHandler.Facets)
 		v1.GET("/search/analytics", searchHandler.SearchAnalytics)
 
 		// Configurable transfer-approval workflow routes (#155).
@@ -299,14 +371,22 @@ func main() {
 		}
 
 		// KYC / AML routes (#55)
-		kycHandler := handlers.NewKYCHandler(db, nil, emailService) // nil = mock provider
+		kycHandler := handlers.NewKYCHandler(db, nil, emailService, nil) // nil, nil = mock KYC provider, AML provider from env
 		v1.POST("/kyc/submit", kycHandler.SubmitKYC)
 		v1.GET("/kyc/status", kycHandler.GetKYCStatus)
 		v1.POST("/kyc/documents", kycHandler.UploadDocument)
 		v1.POST("/kyc/aml/screen", kycHandler.ScreenAML)
+		v1.POST("/kyc/aml/review/:id", kycHandler.ResolveAMLReview)
 		v1.POST("/kyc/accredited", kycHandler.VerifyAccreditedInvestor)
 		v1.GET("/kyc/audit", kycHandler.GetAuditLog)
 		v1.GET("/compliance/report", kycHandler.ComplianceReport)
+
+		// Beneficial ownership (UBO) routes (#379)
+		complianceHandler := handlers.NewComplianceHandler(db)
+		v1.POST("/compliance/ubo", complianceHandler.DeclareBeneficialOwner)
+		v1.GET("/compliance/ubo", complianceHandler.ListBeneficialOwners)
+		v1.POST("/compliance/ubo/:id/resolve", complianceHandler.ResolveUBOReview)
+		v1.POST("/compliance/ubo/documents", complianceHandler.UploadCorporateStructureDocument)
 
 		// Dispute resolution routes (#107)
 		disputeHandler := handlers.NewDisputeHandler(db)
@@ -336,16 +416,27 @@ func main() {
 		v1.POST("/liquidity/pools", liquidityHandler.CreatePool)
 		v1.GET("/liquidity/pools", liquidityHandler.ListPools)
 		v1.GET("/liquidity/pools/:id", liquidityHandler.GetPool)
+		v1.GET("/liquidity/pools/:id/analytics", liquidityHandler.GetPoolAnalytics)
+		v1.GET("/liquidity/pools/compare", liquidityHandler.ComparePools)
 		v1.POST("/liquidity/add", liquidityHandler.AddLiquidity)
 		v1.POST("/liquidity/remove", liquidityHandler.RemoveLiquidity)
 		v1.POST("/liquidity/swap", liquidityHandler.Swap)
 		v1.GET("/liquidity/positions", liquidityHandler.GetLPPositions)
 		v1.GET("/liquidity/swaps", liquidityHandler.GetSwapHistory)
 
-		// Incoming webhook routes
+		// Incoming webhook routes (#372)
 		webhookHandler := handlers.NewWebhookHandler(db)
 		router.POST("/webhooks/stellar-events", webhookHandler.HandleStellarEvent)
 		router.POST("/webhooks/kyc", kycHandler.HandleKYCWebhook)
+
+		emailAnalytics := services.NewEmailAnalyticsService(db)
+		emailWebhookHandler := webhooks.NewEmailWebhookHandler(emailAnalytics, emailService.GetHealthChecker())
+		router.POST("/webhooks/email/sendgrid", emailWebhookHandler.HandleSendGrid)
+		router.POST("/webhooks/email/ses", emailWebhookHandler.HandleSES)
+		router.POST("/webhooks/email", emailWebhookHandler.HandleGeneric)
+		router.POST("/webhooks/email/generic", emailWebhookHandler.HandleGeneric)
+		v1.GET("/email/dashboard", emailWebhookHandler.GetDashboard)
+		v1.GET("/email/analytics", emailWebhookHandler.GetAnalytics)
 
 		// Outgoing webhook subscription routes (#126)
 		outgoingWebhookHandler := handlers.NewOutgoingWebhookHandler(db)
@@ -356,6 +447,16 @@ func main() {
 			webhookSubs.PUT("/:id", outgoingWebhookHandler.UpdateSubscription)
 			webhookSubs.DELETE("/:id", outgoingWebhookHandler.DeleteSubscription)
 			webhookSubs.GET("/:id/logs", outgoingWebhookHandler.GetDeliveryLogs)
+		}
+
+		// Webhook retry and DLQ routes (#186)
+		webhookDeliveryGroup := protected.Group("/webhooks/delivery")
+		{
+			webhookDeliveryGroup.POST("/:id/retry", outgoingWebhookHandler.RetryDelivery)
+			webhookDeliveryGroup.POST("/retry-all", outgoingWebhookHandler.RetryAllFailedDeliveries)
+			webhookDeliveryGroup.POST("/replay-dlq", outgoingWebhookHandler.ReplayDLQ)
+			webhookDeliveryGroup.GET("/dashboard", outgoingWebhookHandler.GetDeliveryDashboard)
+			webhookDeliveryGroup.GET("/:id", outgoingWebhookHandler.GetDeliveryLog)
 		}
 
 		// Notification routes (#123)
@@ -377,14 +478,25 @@ func main() {
 			legalGroup.GET("/:type", legalHandler.GetActiveDocument)
 			legalGroup.GET("/:type/versions", legalHandler.ListDocumentVersions)
 		}
+
+		// GDPR data export routes (#178)
+		gdprExportService := services.NewDataExportService(db, emailService)
+		gdprHandler := handlers.NewGDPRHandler(db, gdprExportService)
+		legalGroup.GET("/gdpr/export/download/:token", gdprHandler.DownloadExport)
+
 		legalProtected := protected.Group("/legal")
 		{
 			legalProtected.POST("/consent", legalHandler.RecordConsent)
 			legalProtected.GET("/consent/history", legalHandler.GetConsentHistory)
 			legalProtected.GET("/consent/pending", legalHandler.CheckPendingConsents)
-			legalProtected.POST("/gdpr/export", legalHandler.RequestDataExport)
-			legalProtected.GET("/gdpr/export/:id", legalHandler.GetDataExportStatus)
+			legalProtected.POST("/gdpr/export", gdprHandler.RequestDataExport)
+			legalProtected.GET("/gdpr/export/:id", gdprHandler.GetDataExportStatus)
 		}
+
+		// Public fee endpoints - preview and active config (#177)
+		feePublicHandler := handlers.NewFeeAdminHandler(db, services.NewFeeService(db))
+		v1.GET("/fees/preview", feePublicHandler.PreviewFee)
+		v1.GET("/fees/active", feePublicHandler.GetActiveFee)
 
 		// Asset taxonomy routes (#159)
 		taxonomyHandler := handlers.NewTaxonomyHandler(db)
@@ -427,6 +539,91 @@ func main() {
 			dashboardGroup.GET("/export", dashboardHandler.ExportReport)
 			dashboardGroup.POST("/activity", dashboardHandler.RecordActivity)
 		}
+
+		// Scheduled report generation and delivery routes (#173)
+		reportHandler := handlers.NewReportHandler(reportScheduler)
+		reportGroup := protected.Group("/reports")
+		{
+			reportGroup.GET("/schedules", reportHandler.ListSchedules)
+			reportGroup.POST("/schedules", reportHandler.CreateSchedule)
+			reportGroup.GET("/schedules/:id", reportHandler.GetSchedule)
+			reportGroup.PUT("/schedules/:id", reportHandler.UpdateSchedule)
+			reportGroup.DELETE("/schedules/:id", reportHandler.DeleteSchedule)
+			reportGroup.POST("/schedules/:id/run", reportHandler.RunSchedule)
+			reportGroup.GET("/history", reportHandler.ListHistory)
+		}
+
+		// Metadata version history routes (#195)
+		v1.GET("/assets/:id/metadata/versions", assetHandler.ListMetadataVersions)
+		v1.GET("/assets/:id/metadata/versions/:version", assetHandler.GetMetadataVersion)
+		protected.POST("/assets/:id/metadata/versions/:version/revert", assetHandler.RevertMetadataVersion)
+
+		// Fiat payment gateway routes (#196)
+		paymentHandler := handlers.NewPaymentHandler(db)
+		paymentGroup := protected.Group("/payments")
+		{
+			paymentGroup.POST("", paymentHandler.CreatePayment)
+			paymentGroup.GET("", paymentHandler.ListPayments)
+			paymentGroup.GET("/:id", paymentHandler.GetPayment)
+		}
+		router.POST("/payments/webhooks/:gateway", paymentHandler.HandleWebhook)
+		adminGroup.POST("/payments/reconcile", paymentHandler.ReconcilePayments)
+
+		// IP whitelist management routes (#194)
+		adminSecurityHandler := handlers.NewAdminSecurityHandler(db)
+		ipWhitelistGroup := adminGroup.Group("/security/ip-whitelist")
+		{
+			ipWhitelistGroup.POST("", adminSecurityHandler.AddIPWhitelistEntry)
+			ipWhitelistGroup.GET("", adminSecurityHandler.ListIPWhitelistEntries)
+			ipWhitelistGroup.DELETE("/:id", adminSecurityHandler.DeleteIPWhitelistEntry)
+		}
+
+		// Email template management routes (#163) — admin-only
+		emailTemplateHandler := handlers.NewEmailTemplateHandler(db)
+		emailTemplateAdmin := adminGroup.Group("/email-templates")
+		{
+			emailTemplateAdmin.GET("", emailTemplateHandler.ListTemplates)
+			emailTemplateAdmin.POST("", emailTemplateHandler.CreateTemplate)
+			emailTemplateAdmin.POST("/preview", emailTemplateHandler.Preview)
+			emailTemplateAdmin.POST("/render", emailTemplateHandler.RenderTemplate)
+			emailTemplateAdmin.GET("/:id", emailTemplateHandler.GetTemplate)
+			emailTemplateAdmin.PUT("/:id", emailTemplateHandler.UpdateTemplate)
+			emailTemplateAdmin.DELETE("/:id", emailTemplateHandler.DeleteTemplate)
+			emailTemplateAdmin.POST("/:id/activate", emailTemplateHandler.ActivateTemplate)
+			emailTemplateAdmin.GET("/:id/versions", emailTemplateHandler.ListVersions)
+			emailTemplateAdmin.GET("/:id/variants", emailTemplateHandler.ListVariants)
+			emailTemplateAdmin.POST("/:id/variants", emailTemplateHandler.CreateVariant)
+		}
+
+		// Asset comparison routes (#167)
+		comparisonHandler := handlers.NewComparisonHandler(db)
+		v1.POST("/comparisons", comparisonHandler.Compare)
+		comparisonGroup := protected.Group("/comparisons")
+		{
+			comparisonGroup.GET("/history", comparisonHandler.ListHistory)
+			comparisonGroup.GET("/history/:id", comparisonHandler.GetHistory)
+		}
+
+		// Asset performance metrics routes (#169)
+		valuationTracker := services.NewValuationTrackerService(db, redisClient)
+		analyticsHandler := handlers.NewAnalyticsHandler(db, valuationTracker)
+		metricsCalculator := services.NewMetricsCalculatorService(db)
+		metricsCalculator.Start(context.Background())
+		v1.GET("/assets/:id/performance", analyticsHandler.GetPerformanceMetrics)
+		v1.GET("/assets/:id/performance/history", analyticsHandler.GetPerformanceHistory)
+		adminGroup.POST("/assets/:id/performance/recalculate", analyticsHandler.RecalculatePerformance)
+		adminGroup.POST("/assets/:id/dividends", analyticsHandler.RecordDividend)
+
+		// User referral program routes (#170)
+		referralHandler := handlers.NewReferralHandler(db)
+		referralGroup := protected.Group("/referrals")
+		{
+			referralGroup.GET("", referralHandler.ListReferrals)
+			referralGroup.GET("/code", referralHandler.GetMyCode)
+			referralGroup.GET("/stats", referralHandler.GetStats)
+			referralGroup.POST("/apply", referralHandler.ApplyCode)
+		}
+		adminGroup.POST("/referrals/:refereeId/qualify", referralHandler.QualifyReferral)
 	}
 
 	// API v2 routes (#124)
@@ -435,6 +632,37 @@ func main() {
 		v2AssetsHandler := handlersv2.NewAssetsHandler(db)
 		v2.GET("/assets", v2AssetsHandler.ListAssets)
 		v2.GET("/assets/:id", v2AssetsHandler.GetAsset)
+		v2.GET("/health", healthHandler.ReadinessCheck)
+
+		v2Protected := v2.Group("")
+		v2Protected.Use(authMiddleware.JWTAuth())
+		{
+			v2Protected.GET("/profile", authHandler.GetProfile)
+			v2Protected.POST("/logout", authHandler.Logout)
+
+			v2ReportHandler := handlers.NewReportHandler(reportScheduler)
+			v2Reports := v2Protected.Group("/reports")
+			{
+				v2Reports.GET("/schedules", v2ReportHandler.ListSchedules)
+				v2Reports.POST("/schedules", v2ReportHandler.CreateSchedule)
+				v2Reports.GET("/schedules/:id", v2ReportHandler.GetSchedule)
+				v2Reports.PUT("/schedules/:id", v2ReportHandler.UpdateSchedule)
+				v2Reports.DELETE("/schedules/:id", v2ReportHandler.DeleteSchedule)
+				v2Reports.POST("/schedules/:id/run", v2ReportHandler.RunSchedule)
+				v2Reports.GET("/history", v2ReportHandler.ListHistory)
+			}
+
+			v2NotificationHandler := handlers.NewNotificationHandler(db)
+			v2Notifications := v2Protected.Group("/notifications")
+			{
+				v2Notifications.GET("", v2NotificationHandler.ListNotifications)
+				v2Notifications.GET("/unread-count", v2NotificationHandler.UnreadCount)
+				v2Notifications.PUT("/read-all", v2NotificationHandler.MarkAllRead)
+				v2Notifications.PUT("/:id/read", v2NotificationHandler.MarkRead)
+				v2Notifications.GET("/preferences", v2NotificationHandler.GetPreferences)
+				v2Notifications.PUT("/preferences", v2NotificationHandler.UpdatePreference)
+			}
+		}
 	}
 
 	// WebSocket routes (#54) — outside v1 group so the CSRF/JSON middleware
@@ -446,6 +674,12 @@ func main() {
 	// Pre-launch the hub so it's ready before the first connection.
 	_ = handlers.GetHub()
 
+	// Initialize and start event indexer (#180)
+	eventIndexer := services.NewEventIndexer(db)
+	eventIndexer.Start()
+
+	r := router
+
 	// Start server
 	port := os.Getenv("SERVER_PORT")
 	if port == "" {
@@ -453,7 +687,7 @@ func main() {
 	}
 
 	log.Printf("Starting server on port %s", port)
-	if err := router.Run(":" + port); err != nil {
+	if err := r.Run(":" + port); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }

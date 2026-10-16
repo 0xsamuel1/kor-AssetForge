@@ -1,26 +1,31 @@
+"use client";
+
 import React from 'react';
-import { useTranslation } from 'react-i18next';
+import { useLocale } from 'next-intl';
+import { useRouter } from 'next/navigation';
 
 const LanguageSelector: React.FC = () => {
-  const { i18n } = useTranslation();
+  const locale = useLocale();
+  const router = useRouter();
 
   const languages = [
     { code: 'en', name: 'English' },
     { code: 'es', name: 'Español' },
+    { code: 'fr', name: 'Français' },
     { code: 'zh', name: '中文' },
   ];
 
   const handleLanguageChange = (languageCode: string) => {
-    i18n.changeLanguage(languageCode);
-    localStorage.setItem('language', languageCode);
+    document.cookie = `NEXT_LOCALE=${languageCode}; path=/; max-age=31536000; SameSite=Lax`;
+    router.refresh();
   };
 
   return (
     <div className="language-selector">
       <select
-        value={i18n.language}
+        value={locale}
         onChange={(e) => handleLanguageChange(e.target.value)}
-        className="language-select"
+        className="language-select border rounded p-1 text-sm bg-background text-foreground"
       >
         {languages.map((lang) => (
           <option key={lang.code} value={lang.code}>

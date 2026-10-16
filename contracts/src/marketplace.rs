@@ -2,6 +2,10 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 
 use crate::emergency_control::{EmergencyControlClient, PauseScope};
 use crate::governance::GovernanceClient;
+use crate::oracle::{OracleClient, AggregatedPrice};
+use crate::reputation::ReputationContractClient;
+use crate::whitelist::WhitelistClient;
+
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -147,6 +151,34 @@ pub struct Listing {
 
 #[derive(Clone)]
 #[contracttype]
+pub struct BundleListing {
+    pub listing_id: u64,
+    pub bundle_id: u64,
+    pub bundle_contract: Address,
+    pub seller: Address,
+    pub price: i128,
+    pub discount_bps: u32,
+    pub active: bool,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct BatchListingInput {
+    pub asset_id: u64,
+    pub amount: i128,
+    pub price: i128,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct BatchPurchaseInput {
+    pub listing_id: u64,
+    pub amount: i128,
+    pub asset_id: u64,
+}
+
+#[derive(Clone)]
+#[contracttype]
 pub enum MarketplaceDataKey {
     MarketplaceAdmin,
     AssetPrivate(u64),
@@ -177,6 +209,14 @@ pub enum MarketplaceDataKey {
     ReportSchedule(u64),
     ReportNonce,
     GeneratedReport(u64),
+    Oracle,
+    BundleListings,
+    BundleListing(u64),
+    // --- Flash-loan protection (Issue #210) ---
+    /// Flash-loan guard configuration (instance-level).
+    FlashLoanGuard,
+    /// Per-buyer purchase counter for a given ledger (block): (buyer, ledger_seq) -> u32.
+    BlockTrades(Address, u32),
 }
 
 /// Storage keys for buy-back and burn system.
@@ -189,6 +229,8 @@ pub enum BuyBackDataKey {
     TotalBurnedKey,
     HistoryKey,
     GovernanceContractKey,
+    ReputationContractKey,
+
 }
 
 /// Storage keys for the referral system.
@@ -249,6 +291,22 @@ pub struct BuyBackRecord {
     pub auto_triggered: bool,
 }
 
+/// Flash-loan protection configuration for the marketplace (Issue #210).
+///
+/// Both limits default to the permissive value (`0`) so existing behaviour is
+/// unchanged until an admin opts in via `configure_flash_loan_guard`.
+#[derive(Clone)]
+#[contracttype]
+pub struct FlashLoanGuardConfig {
+    /// Maximum number of purchases a single buyer may perform within one ledger
+    /// (block). `0` disables the limit. Caps the atomic, same-block churn that
+    /// flash-loan style attacks rely on.
+    pub max_trades_per_block: u32,
+    /// Maximum allowed deviation (bps) between a listing price and the oracle
+    /// price on a guarded purchase. `0` disables the on-chain price check.
+    pub max_price_deviation_bps: u32,
+}
+
 // ============================================================================
 // CONTRACT
 // ============================================================================
@@ -290,6 +348,8 @@ impl Marketplace {
 
         // Enforce whitelisting if asset is private
         Self::require_whitelisted_if_private(&env, asset_id, &seller);
+        // Enforce accredited investor check if whitelist contract is configured
+        Self::require_accredited_investor(&env, &seller);
 
         // Block new listings for deprecated assets.
         if let Some(cfg) = env.storage().persistent().get::<_, AssetConfig>(&MarketplaceDataKey::AssetConfig(asset_id)) {
@@ -331,6 +391,25 @@ impl Marketplace {
         listing_id
     }
 
+    /// Create a listing with oracle price validation.
+    /// The listing price must be within `max_deviation_bps` of the oracle price.
+    pub fn create_listing_with_oracle(
+        env: Env,
+        seller: Address,
+        asset_id: u64,
+        amount: i128,
+        price: i128,
+        emergency_control_id: Address,
+        governance_id: Option<Address>,
+        max_deviation_bps: u32,
+    ) -> u64 {
+        assert!(
+            Self::validate_listing_price(env.clone(), asset_id, price, max_deviation_bps),
+            "price deviates too much from oracle"
+        );
+        Self::create_listing(env, seller, asset_id, amount, price, emergency_control_id, governance_id)
+    }
+
     /// Purchase a listed asset.
     /// Blocked if the asset is paused for Trading scope.
     pub fn purchase(
@@ -344,18 +423,212 @@ impl Marketplace {
         assert!(amount > 0, "amount must be positive");
         buyer.require_auth();
 
+        // Flash-loan guard: cap how many purchases a buyer can make per block.
+        Self::enforce_block_trade_limit(&env, &buyer);
+
         // Enforce pause check for trading operations
         let ec_client = EmergencyControlClient::new(&env, &emergency_control_id);
         ec_client.require_not_paused(&asset_id, &PauseScope::Trading);
 
         // Enforce whitelisting if asset is private
         Self::require_whitelisted_if_private(&env, asset_id, &buyer);
+        // Enforce accredited investor check if whitelist contract is configured
+        Self::require_accredited_investor(&env, &buyer);
+        // Enforce the asset's full TransferRestrictionConfig (max amount,
+        // compliance verification, lock-up, minimum holding period, and
+        // approval requirement) exactly as `purchase_internal` /
+        // `purchase_with_approval` already do -- previously this was the
+        // only transfer path that skipped it entirely, so an asset
+        // configured with e.g. a lock-up or a transfer cap was enforceable
+        // only if buyers happened to go through the approval flow (#380).
+        // `approval_id: None` correctly rejects a restricted asset with
+        // `approval_required = true` here, same as any other direct
+        // (non-pre-approved) transfer attempt.
+        Self::enforce_transfer_restrictions(&env, &buyer, asset_id, amount, None);
 
         // Collect fee and credit referral reward
         if env.storage().instance().has(&BuyBackDataKey::BuyBackConfigKey) {
             let fee = Self::collect_fee(env.clone(), amount);
             Self::credit_referral_reward(&env, &buyer, fee);
         }
+
+        // Record trade completion in reputation system if configured
+        if let Some(rep_addr) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&BuyBackDataKey::ReputationContractKey)
+        {
+            let admin: Address = env
+                .storage()
+                .instance()
+                .get(&BuyBackDataKey::BuyBackAdminKey)
+                .unwrap_or(buyer.clone());
+            let rep_client = ReputationContractClient::new(&env, &rep_addr);
+            rep_client.record_trade_completion(&admin, &buyer);
+        }
+        true
+    }
+
+    /// Purchase a listed asset with oracle price validation.
+    /// The purchase price must be within `max_deviation_bps` of the oracle price.
+    pub fn purchase_with_oracle_price(
+        env: Env,
+        buyer: Address,
+        listing_id: u64,
+        amount: i128,
+        asset_id: u64,
+        emergency_control_id: Address,
+        max_deviation_bps: u32,
+    ) -> bool {
+        let listing = Self::get_listing(env.clone(), listing_id)
+            .expect("listing not found");
+        assert!(
+            Self::validate_listing_price(env.clone(), asset_id, listing.price, max_deviation_bps),
+            "price deviates too much from oracle"
+        );
+        Self::purchase(env, buyer, listing_id, amount, asset_id, emergency_control_id)
+    }
+
+    /// Batch create listings for gas optimization.
+    /// Validates all inputs upfront, then creates all listings atomically.
+    /// Panics on any failure to ensure atomicity, rolling back the entire batch.
+    /// Maximum 20 listings per batch.
+    pub fn batch_create_listing(
+        env: Env,
+        seller: Address,
+        listings: Vec<BatchListingInput>,
+        emergency_control_id: Address,
+        governance_id: Option<Address>,
+    ) -> Vec<u64> {
+        let count = listings.len();
+        assert!(count > 0, "batch must not be empty");
+        assert!(count <= 20, "batch size exceeds maximum of 20");
+
+        seller.require_auth();
+
+        for input in listings.iter() {
+            assert!(input.amount > 0, "amount must be positive");
+            assert!(input.price > 0, "price must be positive");
+
+            let ec_client = EmergencyControlClient::new(&env, &emergency_control_id);
+            ec_client.require_not_paused(&input.asset_id, &PauseScope::Trading);
+
+            if let Some(ref gov_addr) = governance_id {
+                let gov_client = GovernanceClient::new(&env, gov_addr);
+                gov_client.require_approved(&input.asset_id);
+            }
+
+            Self::require_whitelisted_if_private(&env, input.asset_id, &seller);
+
+            if let Some(cfg) = env.storage().persistent().get::<_, AssetConfig>(&MarketplaceDataKey::AssetConfig(input.asset_id)) {
+                if cfg.deprecated {
+                    panic!("asset is deprecated");
+                }
+            }
+        }
+
+        for input in listings.iter() {
+            Self::register_asset_if_missing(&env, input.asset_id);
+        }
+
+        let mut result_ids: Vec<u64> = Vec::new(&env);
+        let mut total_value: i128 = 0;
+
+        for input in listings.iter() {
+            let listing_id: u64 = env
+                .storage()
+                .instance()
+                .get(&MarketplaceDataKey::ListingNonce)
+                .unwrap_or(0)
+                + 1;
+            env.storage().instance().set(&MarketplaceDataKey::ListingNonce, &listing_id);
+
+            let listing = Listing {
+                asset_id: input.asset_id,
+                seller: seller.clone(),
+                price: input.price,
+                amount: input.amount,
+                active: true,
+            };
+
+            env.storage().persistent().set(&MarketplaceDataKey::Listing(listing_id), &listing);
+
+            let listing_count: u64 = env.storage().instance().get(&MarketplaceDataKey::ListingCount(input.asset_id)).unwrap_or(0) + 1;
+            env.storage().instance().set(&MarketplaceDataKey::ListingCount(input.asset_id), &listing_count);
+
+            let value = input.price.checked_mul(input.amount).unwrap_or(0);
+            total_value = total_value.checked_add(value).expect("total value overflow");
+            let existing_total: i128 = env.storage().instance().get(&MarketplaceDataKey::Volume(input.asset_id)).unwrap_or(0);
+            env.storage().instance().set(&MarketplaceDataKey::Volume(input.asset_id), &(existing_total + value));
+
+            result_ids.push_back(listing_id);
+        }
+
+        Self::append_audit_entry(&env, seller.clone(), Symbol::new(&env, "batch_listing_created"), 0, total_value);
+
+        env.events().publish(
+            (Symbol::new(&env, "batch_listing_created"), seller),
+            result_ids.clone(),
+        );
+
+        result_ids
+    }
+
+    /// Batch purchase listings for gas optimization.
+    /// Validates all inputs upfront, then executes all purchases atomically.
+    /// Panics on any failure to ensure atomicity, rolling back the entire batch.
+    /// Maximum 20 purchases per batch.
+    pub fn batch_purchase(
+        env: Env,
+        buyer: Address,
+        purchases: Vec<BatchPurchaseInput>,
+        emergency_control_id: Address,
+    ) -> bool {
+        let count = purchases.len();
+        assert!(count > 0, "batch must not be empty");
+        assert!(count <= 20, "batch size exceeds maximum of 20");
+
+        buyer.require_auth();
+
+        for input in purchases.iter() {
+            assert!(input.amount > 0, "amount must be positive");
+
+            let ec_client = EmergencyControlClient::new(&env, &emergency_control_id);
+            ec_client.require_not_paused(&input.asset_id, &PauseScope::Trading);
+
+            Self::require_whitelisted_if_private(&env, input.asset_id, &buyer);
+        }
+
+        let mut total_amount: i128 = 0;
+        for input in purchases.iter() {
+            if env.storage().instance().has(&BuyBackDataKey::BuyBackConfigKey) {
+                let fee = Self::collect_fee(env.clone(), input.amount);
+                Self::credit_referral_reward(&env, &buyer, fee);
+            }
+
+            if let Some(rep_addr) = env
+                .storage()
+                .instance()
+                .get::<_, Address>(&BuyBackDataKey::ReputationContractKey)
+            {
+                let admin: Address = env
+                    .storage()
+                    .instance()
+                    .get(&BuyBackDataKey::BuyBackAdminKey)
+                    .unwrap_or(buyer.clone());
+                let rep_client = ReputationContractClient::new(&env, &rep_addr);
+                rep_client.record_trade_completion(&admin, &buyer);
+            }
+
+            total_amount = total_amount.checked_add(input.amount).expect("total amount overflow");
+        }
+
+        Self::append_audit_entry(&env, buyer.clone(), Symbol::new(&env, "batch_purchase"), 0, total_amount);
+
+        env.events().publish(
+            (Symbol::new(&env, "batch_purchase_completed"), buyer),
+            purchases.len(),
+        );
 
         true
     }
@@ -699,6 +972,296 @@ impl Marketplace {
                 panic!("user not whitelisted for private asset");
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Flash-loan protection (Issue #210)
+    // -----------------------------------------------------------------------
+
+    /// Configure the marketplace flash-loan guard. Admin only.
+    ///
+    /// * `max_trades_per_block` – per-buyer purchase cap per ledger (0 = off).
+    /// * `max_price_deviation_bps` – max listing-vs-oracle deviation enforced by
+    ///   [`Marketplace::purchase_guarded`] (0 = off).
+    pub fn configure_flash_loan_guard(
+        env: Env,
+        admin: Address,
+        max_trades_per_block: u32,
+        max_price_deviation_bps: u32,
+    ) {
+        Self::require_admin(&env, &admin);
+        let cfg = FlashLoanGuardConfig {
+            max_trades_per_block,
+            max_price_deviation_bps,
+        };
+        env.storage()
+            .instance()
+            .set(&MarketplaceDataKey::FlashLoanGuard, &cfg);
+        env.events().publish(
+            (Symbol::new(&env, "flash_loan_guard_configured"),),
+            (max_trades_per_block, max_price_deviation_bps),
+        );
+    }
+
+    /// Return the active flash-loan guard configuration (defaults to permissive).
+    pub fn get_flash_loan_guard(env: Env) -> FlashLoanGuardConfig {
+        Self::flash_loan_guard(&env)
+    }
+
+    /// Purchase with both the per-block trade limit and an oracle price-deviation
+    /// check applied (Issue #210). Reverts if the listing price strays beyond the
+    /// configured deviation from the oracle, blocking price-manipulation exits.
+    pub fn purchase_guarded(
+        env: Env,
+        buyer: Address,
+        listing_id: u64,
+        amount: i128,
+        asset_id: u64,
+        emergency_control_id: Address,
+    ) -> bool {
+        let cfg = Self::flash_loan_guard(&env);
+        if cfg.max_price_deviation_bps > 0 {
+            let listing = Self::get_listing(env.clone(), listing_id).expect("listing not found");
+            assert!(
+                Self::validate_listing_price(
+                    env.clone(),
+                    asset_id,
+                    listing.price,
+                    cfg.max_price_deviation_bps
+                ),
+                "price deviates too much from oracle"
+            );
+        }
+        Self::purchase(env, buyer, listing_id, amount, asset_id, emergency_control_id)
+    }
+
+    fn flash_loan_guard(env: &Env) -> FlashLoanGuardConfig {
+        env.storage()
+            .instance()
+            .get(&MarketplaceDataKey::FlashLoanGuard)
+            .unwrap_or(FlashLoanGuardConfig {
+                max_trades_per_block: 0,
+                max_price_deviation_bps: 0,
+            })
+    }
+
+    fn enforce_block_trade_limit(env: &Env, buyer: &Address) {
+        let cfg = Self::flash_loan_guard(env);
+        if cfg.max_trades_per_block == 0 {
+            return;
+        }
+        let seq = env.ledger().sequence();
+        let key = MarketplaceDataKey::BlockTrades(buyer.clone(), seq);
+        let count: u32 = env.storage().persistent().get(&key).unwrap_or(0);
+        if count >= cfg.max_trades_per_block {
+            panic!("per-block trade limit exceeded");
+        }
+        env.storage().persistent().set(&key, &(count + 1));
+    }
+
+    // -----------------------------------------------------------------------
+    // Oracle Price Validation
+    // -----------------------------------------------------------------------
+
+    /// Set the oracle contract address for price validation.
+    pub fn set_marketplace_oracle(env: Env, admin: Address, oracle: Address) {
+        Self::require_admin(&env, &admin);
+        env.storage().instance().set(&MarketplaceDataKey::Oracle, &oracle);
+        env.events().publish((Symbol::new(&env, "oracle_set"),), oracle);
+    }
+
+    /// Get the oracle contract address.
+    pub fn get_marketplace_oracle(env: Env) -> Option<Address> {
+        env.storage().instance().get(&MarketplaceDataKey::Oracle)
+    }
+
+    /// Validate a price against the oracle.
+    /// Returns `true` if the price is within `max_deviation_bps` of the oracle price.
+    pub fn validate_listing_price(env: Env, asset_id: u64, price: i128, max_deviation_bps: u32) -> bool {
+        let oracle_addr: Address = env.storage().instance().get(&MarketplaceDataKey::Oracle)
+            .expect("oracle not configured");
+        let oracle = OracleClient::new(&env, &oracle_addr);
+        let oracle_price: AggregatedPrice = oracle.get_price(&asset_id);
+        if oracle_price.price == 0 {
+            return true;
+        }
+        let deviation_bps = if price >= oracle_price.price {
+            ((price - oracle_price.price) * 10_000 / oracle_price.price) as u32
+        } else {
+            ((oracle_price.price - price) * 10_000 / oracle_price.price) as u32
+        };
+        deviation_bps <= max_deviation_bps
+    }
+
+    // -----------------------------------------------------------------------
+    // Bundle Marketplace Integration
+    // -----------------------------------------------------------------------
+
+    /// List a bundle on the marketplace with an optional discount.
+    pub fn create_bundle_listing(
+        env: Env,
+        seller: Address,
+        bundle_id: u64,
+        bundle_contract: Address,
+        price: i128,
+        discount_bps: u32,
+        emergency_control_id: Address,
+    ) -> u64 {
+        seller.require_auth();
+        assert!(price > 0, "price must be positive");
+        assert!(discount_bps <= 10000, "discount must be <= 10000");
+
+        let ec_client = EmergencyControlClient::new(&env, &emergency_control_id);
+        ec_client.require_not_paused(&bundle_id, &PauseScope::Trading);
+
+        // Verify bundle exists via the bundle contract
+        let bundle_client = crate::asset_bundle::AssetBundleContractClient::new(&env, &bundle_contract);
+        let bundle = bundle_client.get_bundle(&bundle_id);
+        if bundle.is_none() {
+            panic!("bundle not found");
+        }
+        let bundle_data = bundle.unwrap();
+        if bundle_data.creator != seller {
+            panic!("only bundle creator can list");
+        }
+
+        let listing_id: u64 = env
+            .storage()
+            .instance()
+            .get(&MarketplaceDataKey::ListingNonce)
+            .unwrap_or(0) + 1;
+        env.storage().instance().set(&MarketplaceDataKey::ListingNonce, &listing_id);
+
+        let listing = BundleListing {
+            listing_id,
+            bundle_id,
+            bundle_contract,
+            seller: seller.clone(),
+            price,
+            discount_bps,
+            active: true,
+        };
+
+        env.storage().persistent().set(&MarketplaceDataKey::BundleListing(listing_id), &listing);
+
+        let mut list: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&MarketplaceDataKey::BundleListings)
+            .unwrap_or(Vec::new(&env));
+        list.push_back(listing_id);
+        env.storage().instance().set(&MarketplaceDataKey::BundleListings, &list);
+
+        Self::append_audit_entry(&env, seller, Symbol::new(&env, "bundle_listed"), bundle_id, price);
+        listing_id
+    }
+
+    /// Get a bundle listing by ID.
+    pub fn get_bundle_listing(env: Env, listing_id: u64) -> Option<BundleListing> {
+        env.storage().persistent().get(&MarketplaceDataKey::BundleListing(listing_id))
+    }
+
+    /// List all active bundle listing IDs.
+    pub fn get_bundle_listings(env: Env) -> Vec<u64> {
+        env.storage().instance().get(&MarketplaceDataKey::BundleListings)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Purchase a bundle listing through the marketplace.
+    /// The marketplace collects its fee, then completes the bundle purchase via the bundle contract.
+    pub fn buy_bundle_listing(
+        env: Env,
+        buyer: Address,
+        listing_id: u64,
+        emergency_control_id: Address,
+        token: Address,
+    ) -> bool {
+        buyer.require_auth();
+
+        let mut listing: BundleListing = env.storage().persistent()
+            .get(&MarketplaceDataKey::BundleListing(listing_id))
+            .expect("bundle listing not found");
+        assert!(listing.active, "listing not active");
+
+        let ec_client = EmergencyControlClient::new(&env, &emergency_control_id);
+        ec_client.require_not_paused(&listing.bundle_id, &PauseScope::Trading);
+
+        let fee = if env.storage().instance().has(&BuyBackDataKey::BuyBackConfigKey) {
+            Self::collect_fee(env.clone(), listing.price)
+        } else {
+            0
+        };
+
+        // Transfer tokens from buyer to seller (minus marketplace fee)
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        let net_price = listing.price - fee;
+        token_client.transfer(&buyer, &listing.seller, &net_price);
+
+        // Complete the bundle purchase through the bundle contract
+        let bundle_client = crate::asset_bundle::AssetBundleContractClient::new(&env, &listing.bundle_contract);
+        bundle_client.buy_bundle(&buyer, &listing.bundle_id, &token);
+
+        // Mark the bundle listing as sold
+        listing.active = false;
+        env.storage().persistent().set(&MarketplaceDataKey::BundleListing(listing_id), &listing);
+
+        Self::append_audit_entry(&env, buyer.clone(), Symbol::new(&env, "bundle_purchased"), listing.bundle_id, listing.price);
+        Self::credit_referral_reward(&env, &buyer, fee);
+
+        true
+    }
+
+    /// Cancel an active bundle listing.
+    pub fn cancel_bundle_listing(env: Env, seller: Address, listing_id: u64) {
+        seller.require_auth();
+        let mut listing: BundleListing = env.storage().persistent()
+            .get(&MarketplaceDataKey::BundleListing(listing_id))
+            .expect("bundle listing not found");
+        assert_eq!(listing.seller, seller, "only seller can cancel");
+        assert!(listing.active, "listing not active");
+        listing.active = false;
+        env.storage().persistent().set(&MarketplaceDataKey::BundleListing(listing_id), &listing);
+        Self::append_audit_entry(&env, seller, Symbol::new(&env, "bundle_canceled"), listing.bundle_id, 0);
+    }
+
+    /// Update the price or discount on an active bundle listing.
+    pub fn update_bundle_listing(
+        env: Env,
+        seller: Address,
+        listing_id: u64,
+        new_price: i128,
+        new_discount_bps: u32,
+    ) {
+        seller.require_auth();
+        assert!(new_price > 0, "price must be positive");
+        assert!(new_discount_bps <= 10000, "discount must be <= 10000");
+
+        let mut listing: BundleListing = env.storage().persistent()
+            .get(&MarketplaceDataKey::BundleListing(listing_id))
+            .expect("bundle listing not found");
+        assert_eq!(listing.seller, seller, "only seller can update listing");
+        assert!(listing.active, "listing not active");
+
+        listing.price = new_price;
+        listing.discount_bps = new_discount_bps;
+        env.storage().persistent().set(&MarketplaceDataKey::BundleListing(listing_id), &listing);
+
+        Self::append_audit_entry(&env, seller, Symbol::new(&env, "bundle_listing_updated"), listing.bundle_id, new_price);
+    }
+
+    /// Return the effective (post-discount) price for a bundle listing.
+    pub fn get_discounted_bundle_price(env: Env, listing_id: u64) -> i128 {
+        let listing: BundleListing = env.storage().persistent()
+            .get(&MarketplaceDataKey::BundleListing(listing_id))
+            .expect("bundle listing not found");
+        if listing.discount_bps == 0 {
+            return listing.price;
+        }
+        let discount = listing.price
+            .checked_mul(listing.discount_bps as i128)
+            .expect("discount overflow")
+            / 10_000;
+        listing.price - discount
     }
 
     // -----------------------------------------------------------------------
@@ -1198,6 +1761,16 @@ impl Marketplace {
         env.events()
             .publish((Symbol::new(&env, "burn_cap_updated"),), new_cap);
     }
+
+    /// Set or update the reputation contract address. BBAdmin only.
+    pub fn set_reputation_contract(env: Env, admin: Address, reputation_contract: Address) {
+        admin.require_auth();
+        Self::require_buyback_admin(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&BuyBackDataKey::ReputationContractKey, &reputation_contract);
+    }
+
 
     /// Pause or unpause the buy-back system. BBAdmin only.
     pub fn set_buyback_paused(env: Env, admin: Address, paused: bool) {
@@ -2981,6 +3554,56 @@ mod test {
 
         let generated = mp_client.run_due_reports(&admin);
         assert!(generated >= 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Oracle Integration Tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_and_get_marketplace_oracle() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let mp_id = env.register_contract(None, Marketplace);
+        let mp_client = MarketplaceClient::new(&env, &mp_id);
+        let admin = Address::generate(&env);
+        mp_client.initialize(&admin);
+
+        let oracle_addr = Address::generate(&env);
+        mp_client.set_marketplace_oracle(&admin, &oracle_addr);
+        let stored = mp_client.get_marketplace_oracle().unwrap();
+        assert_eq!(stored, oracle_addr);
+    }
+
+    #[test]
+    fn test_oracle_set_and_get_on_marketplace() {
+        use crate::oracle::{Oracle, OracleClient};
+
+        let env = Env::default();
+        env.mock_all_auths();
+
+        // Deploy oracle
+        let oracle_id = env.register_contract(None, Oracle);
+        let oracle_client = OracleClient::new(&env, &oracle_id);
+        let oracle_admin = Address::generate(&env);
+        oracle_client.initialize(&oracle_admin, &500);
+
+        // Deploy marketplace
+        let mp_id = env.register_contract(None, Marketplace);
+        let mp_client = MarketplaceClient::new(&env, &mp_id);
+        let mp_admin = Address::generate(&env);
+        mp_client.initialize(&mp_admin);
+
+        // Set marketplace on oracle
+        oracle_client.set_marketplace(&oracle_admin, &mp_id);
+        let stored_mp = oracle_client.get_marketplace().unwrap();
+        assert_eq!(stored_mp, mp_id);
+
+        // Set oracle on marketplace
+        mp_client.set_marketplace_oracle(&mp_admin, &oracle_id);
+        let stored_oracle = mp_client.get_marketplace_oracle().unwrap();
+        assert_eq!(stored_oracle, oracle_id);
     }
 
     #[test]

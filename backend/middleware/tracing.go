@@ -1,34 +1,23 @@
 package middleware
 
-// W3C Trace Context propagation for kor-AssetForge.
-//
-// Minimal, stdlib-only implementation (no new external dependencies):
-//   - Extracts incoming `traceparent` (+ `tracestate`) per W3C spec.
-//   - Generates a new trace ID when absent/invalid.
-//   - Derives a child span ID per request and puts both into
-//     context.Context so backend/services/* can propagate them
-//     via c.Request.Context() / ctx parameters.
-//   - Echoes `traceparent` + `X-Trace-ID` on the response and joins
-//     trace state with the existing `X-Request-ID` / `request_id`
-//     logging convention (handlers.RequestLogger).
-//
-// Background jobs (backend/jobs, services backup/audit/cache warmers)
-// should start from StartJobSpan which continues the incoming trace
-// when present or starts a fresh one otherwise.
-
 import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
-type traceContextKey struct{}
+const traceIDContextKey = "trace_id"
 
-// W3C header names.
+// W3C header names for manual propagation helpers below.
 const (
 	HeaderTraceParent = "traceparent"
 	HeaderTraceState  = "tracestate"
@@ -36,13 +25,64 @@ const (
 	HeaderRequestID   = "X-Request-ID"
 )
 
+func TracingMiddleware(serviceName string) gin.HandlerFunc {
+	tracer := otel.Tracer(serviceName)
+	propagator := otel.GetTextMapPropagator()
+	if propagator == nil {
+		propagator = propagation.TraceContext{}
+	}
+
+	return func(c *gin.Context) {
+		ctx := propagator.Extract(c.Request.Context(), propagation.HeaderCarrier(c.Request.Header))
+		spanName := fmt.Sprintf("%s %s", c.Request.Method, c.FullPath())
+		if c.FullPath() == "" {
+			spanName = fmt.Sprintf("%s %s", c.Request.Method, c.Request.URL.Path)
+		}
+
+		ctx, span := tracer.Start(ctx, spanName,
+			trace.WithSpanKind(trace.SpanKindServer),
+			trace.WithAttributes(
+				attribute.String("http.method", c.Request.Method),
+				attribute.String("http.route", c.FullPath()),
+				attribute.String("http.target", c.Request.URL.Path),
+				attribute.String("http.user_agent", c.Request.UserAgent()),
+				attribute.String("net.peer.ip", c.ClientIP()),
+			),
+		)
+		defer span.End()
+
+		traceID := span.SpanContext().TraceID().String()
+		if span.SpanContext().IsValid() {
+			c.Set(traceIDContextKey, traceID)
+			c.Set("trace_id", traceID)
+			c.Header("X-Trace-ID", traceID)
+		}
+
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+
+		span.SetAttributes(attribute.Int("http.status_code", c.Writer.Status()))
+		for _, err := range c.Errors {
+			span.RecordError(err.Err)
+		}
+	}
+}
+
+// --- W3C context helpers (issues #317) ---
+// Lightweight TraceInfo propagation for services/background jobs so callers
+// can forward trace IDs without importing OTel directly. The OTel span
+// above remains the source of truth for export; these helpers carry the IDs
+// in context.Context (see docs/OBSERVABILITY.md).
+
+type traceContextKey struct{}
+
 // TraceInfo carries the W3C identifiers for one request/job span.
 type TraceInfo struct {
-	TraceID  string
-	SpanID   string
-	Sampled  bool
-	State    string
-	IsNew    bool
+	TraceID string
+	SpanID  string
+	Sampled bool
+	State   string
+	IsNew   bool
 }
 
 // ParseTraceParent parses a W3C `traceparent` header:
@@ -163,47 +203,4 @@ func InjectTraceHeaders(ctx context.Context, header http.Header) {
 		header.Set(HeaderTraceState, info.State)
 	}
 	header.Set(HeaderTraceID, info.TraceID)
-}
-
-// TracingMiddleware extracts/creates W3C trace context for each request.
-// It must run before RequestLogger so request_id and trace_id are joined.
-func TracingMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var info TraceInfo
-		if tp := c.GetHeader(HeaderTraceParent); tp != "" {
-			if traceID, parentSpan, sampled, ok := ParseTraceParent(tp); ok {
-				info = TraceInfo{
-					TraceID: traceID,
-					SpanID:  newHex(8), // this request is a child of the incoming span
-					Sampled: sampled,
-					State:   c.GetHeader(HeaderTraceState),
-				}
-				_ = parentSpan
-			}
-		}
-		if info.TraceID == "" {
-			info = TraceInfo{TraceID: newHex(16), SpanID: newHex(8), Sampled: true, IsNew: true}
-		}
-
-		ctx := ContextWithTrace(c.Request.Context(), info)
-		c.Request = c.Request.WithContext(ctx)
-
-		// Join with existing request_id convention when present.
-		if rid, ok := c.Get("request_id"); ok {
-			if s, ok := rid.(string); ok && s != "" {
-				c.Set("trace_id", info.TraceID)
-				_ = s
-			}
-		} else {
-			c.Set("trace_id", info.TraceID)
-		}
-
-		c.Header(HeaderTraceParent, FormatTraceParent(info.TraceID, info.SpanID, info.Sampled))
-		if info.State != "" {
-			c.Header(HeaderTraceState, info.State)
-		}
-		c.Header(HeaderTraceID, info.TraceID)
-
-		c.Next()
-	}
 }

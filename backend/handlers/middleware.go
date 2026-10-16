@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"runtime/debug"
@@ -9,7 +10,38 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+
+	"github.com/yourusername/kor-assetforge/apperrors"
+	"github.com/yourusername/kor-assetforge/i18n"
+	"github.com/yourusername/kor-assetforge/middleware"
 )
+
+// errorCodeTranslationKeys maps apperrors error codes to i18n keys so error
+// responses can be localized for the requester's resolved language (#185).
+var errorCodeTranslationKeys = map[apperrors.ErrorCode]string{
+	apperrors.CodeValidationFailed:     "errors.validation_failed",
+	apperrors.CodeNotFound:             "errors.not_found",
+	apperrors.CodeUnauthorized:         "errors.unauthorized",
+	apperrors.CodeForbidden:            "errors.forbidden",
+	apperrors.CodeConflict:             "errors.conflict",
+	apperrors.CodeTooManyRequests:      "errors.too_many_requests",
+	apperrors.CodeInternalServerError:  "errors.internal_server_error",
+}
+
+// localizedErrorMessage returns the translated message for err's AppError code
+// in the request's resolved language, falling back to err's own message text
+// for error codes that don't have a translation entry.
+func localizedErrorMessage(c *gin.Context, err error) string {
+	var appErr *apperrors.AppError
+	if errors.As(err, &appErr) {
+		if key, ok := errorCodeTranslationKeys[appErr.Code]; ok {
+			lang := middleware.LanguageFromContext(c)
+			return i18n.T(lang, key, nil)
+		}
+		return appErr.Message
+	}
+	return err.Error()
+}
 
 var Logger *zap.Logger
 
@@ -36,8 +68,10 @@ func RequestLogger() gin.HandlerFunc {
 
 		// Log request details
 		duration := time.Since(start)
+		traceID, _ := c.Get("trace_id")
 		Logger.Info("HTTP Request",
 			zap.String("request_id", requestID),
+			zap.Any("trace_id", traceID),
 			zap.String("method", c.Request.Method),
 			zap.String("path", c.Request.URL.Path),
 			zap.Int("status", c.Writer.Status()),
@@ -55,9 +89,11 @@ func GlobalErrorHandler() gin.HandlerFunc {
 			if err := recover(); err != nil {
 				// Log the panic with stack trace
 				requestID, _ := c.Get("request_id")
+				traceID, _ := c.Get("trace_id")
 				Logger.Error("Panic recovered",
 					zap.Any("error", err),
 					zap.Any("request_id", requestID),
+					zap.Any("trace_id", traceID),
 					zap.String("stack", string(debug.Stack())),
 				)
 
@@ -66,6 +102,7 @@ func GlobalErrorHandler() gin.HandlerFunc {
 					"error":      "Internal Server Error",
 					"message":    fmt.Sprintf("%v", err),
 					"request_id": requestID,
+					"trace_id":   traceID,
 					"code":       500,
 				})
 				c.Abort()
@@ -77,13 +114,15 @@ func GlobalErrorHandler() gin.HandlerFunc {
 		// Check if there are errors in the context
 		if len(c.Errors) > 0 {
 			requestID, _ := c.Get("request_id")
+			traceID, _ := c.Get("trace_id")
 			err := c.Errors.Last()
-			
-			// Standardized JSON error response
+
+			// Standardized JSON error response, localized per the resolved request language (#185)
 			c.JSON(c.Writer.Status(), gin.H{
 				"error":      "Processing Error",
-				"message":    err.Error(),
+				"message":    localizedErrorMessage(c, err.Err),
 				"request_id": requestID,
+				"trace_id":   traceID,
 				"code":       c.Writer.Status(),
 			})
 		}

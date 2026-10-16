@@ -5,12 +5,14 @@ import { WalletConnect } from "@/components/WalletConnect";
 import { AssetGrid } from "@/components/AssetGrid";
 import { Header } from "@/components/Header";
 import { stellarService, StellarWallet } from "@/lib/stellar";
+import { OnboardingOverlay } from "@/components/onboarding/OnboardingOverlay";
 import { AssetInfo } from "@/lib/stellar";
 
 export default function HomePage() {
   const [wallet, setWallet] = useState<StellarWallet | undefined>();
   const [assets, setAssets] = useState<AssetInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [kycStatus, setKycStatus] = useState<string | undefined>();
 
   useEffect(() => {
     const loadAssets = async () => {
@@ -27,19 +29,28 @@ export default function HomePage() {
     loadAssets();
   }, []);
 
+  useEffect(() => {
+    if (wallet?.connected) {
+      stellarService.getKYCStatus(wallet.publicKey)
+        .then(setKycStatus)
+        .catch(() => setKycStatus(undefined));
+    }
+  }, [wallet]);
+
   const handleWalletConnected = (connectedWallet: StellarWallet) => {
     setWallet(connectedWallet);
   };
 
   const handleWalletDisconnected = () => {
     setWallet(undefined);
+    setKycStatus(undefined);
   };
 
   return (
     <div className="min-h-screen bg-background">
       <Header wallet={wallet} />
 
-      <main className="container mx-auto px-4 py-8">
+      <main id="main-content" className="container mx-auto px-4 py-8">
         <div className="text-center mb-12">
           <h1 className="text-4xl font-bold mb-4">kor-AssetForge</h1>
           <p className="text-xl text-muted-foreground mb-8">
@@ -73,6 +84,12 @@ export default function HomePage() {
 
         <AssetGrid assets={assets} isLoading={isLoading} wallet={wallet} />
       </main>
+
+      <OnboardingOverlay
+        wallet={wallet}
+        onWalletConnected={handleWalletConnected}
+        kycStatus={kycStatus}
+      />
     </div>
   );
 }

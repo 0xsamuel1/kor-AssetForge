@@ -128,6 +128,30 @@ type Setup2FAResponse struct {
 	BackupCodes []string `json:"backup_codes"`
 }
 
+// RegenerateRecoveryCodesRequest represents a request to regenerate 2FA recovery codes
+type RegenerateRecoveryCodesRequest struct {
+	Password  string `json:"password" binding:"required"`
+	TOTPToken string `json:"totp_token" binding:"required"`
+}
+
+// RecoveryCodesResponse represents a freshly generated set of recovery codes
+type RecoveryCodesResponse struct {
+	RecoveryCodes []string `json:"recovery_codes"`
+	GeneratedAt   string   `json:"generated_at"`
+}
+
+// RecoveryCodeLoginRequest represents 2FA login using a recovery code
+type RecoveryCodeLoginRequest struct {
+	UserID       uint   `json:"user_id" binding:"required"`
+	RecoveryCode string `json:"recovery_code" binding:"required"`
+}
+
+// RecoveryCodesStatusResponse reports how many unused recovery codes remain
+type RecoveryCodesStatusResponse struct {
+	RemainingCodes int    `json:"remaining_codes"`
+	GeneratedAt    string `json:"generated_at,omitempty"`
+}
+
 // Register handles user registration
 // @Summary Register a new user
 // @Description Create a new user account with Stellar address and email
@@ -617,6 +641,204 @@ func (h *AuthHandler) Disable2FA(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "2FA disabled successfully"})
 }
 
+// GenerateRecoveryCodes creates a fresh set of hashed, single-use 2FA recovery
+// codes for the authenticated user, replacing any existing codes. The plaintext
+// codes are only ever returned in this response and cannot be retrieved again.
+// @Summary Generate 2FA recovery codes
+// @Description Generate a new set of backup recovery codes, invalidating any previous codes
+// @Tags auth
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param request body auth.RegenerateRecoveryCodesRequest true "Password and current TOTP token"
+// @Success 200 {object} auth.RecoveryCodesResponse
+// @Failure 400 {object} apperrors.ErrorResponse
+// @Failure 401 {object} apperrors.ErrorResponse
+// @Router /auth/2fa/recovery-codes [post]
+func (h *AuthHandler) GenerateRecoveryCodes(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		apperrors.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	var req RegenerateRecoveryCodesRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apperrors.AbortWithError(c, apperrors.NewValidationError("Invalid request data", err))
+		return
+	}
+
+	var user models.User
+	if err := h.db.First(&user, userID).Error; err != nil {
+		apperrors.AbortWithError(c, apperrors.NewNotFoundError("User not found"))
+		return
+	}
+
+	if !user.TOTPEnabled {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("2FA must be enabled before generating recovery codes"))
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		apperrors.AbortWithError(c, apperrors.NewUnauthorizedError("Invalid password"))
+		return
+	}
+
+	if !validateTOTP(user.TOTPSecret, req.TOTPToken) {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Invalid TOTP token"))
+		return
+	}
+
+	plainCodes, hashedCodes, err := generateRecoveryCodes(recoveryCodeCount)
+	if err != nil {
+		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to generate recovery codes"))
+		return
+	}
+
+	now := time.Now()
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ?", user.ID).Delete(&models.RecoveryCode{}).Error; err != nil {
+			return err
+		}
+		codes := make([]models.RecoveryCode, len(hashedCodes))
+		for i, hash := range hashedCodes {
+			codes[i] = models.RecoveryCode{UserID: user.ID, CodeHash: hash}
+		}
+		if err := tx.Create(&codes).Error; err != nil {
+			return err
+		}
+		return tx.Model(&user).Update("recovery_codes_generated_at", now).Error
+	})
+	if err != nil {
+		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to store recovery codes"))
+		return
+	}
+
+	c.JSON(http.StatusOK, RecoveryCodesResponse{
+		RecoveryCodes: plainCodes,
+		GeneratedAt:   now.Format(time.RFC3339),
+	})
+}
+
+// GetRecoveryCodesStatus reports how many unused recovery codes remain for the
+// authenticated user, without exposing the codes themselves.
+// @Summary Get 2FA recovery code status
+// @Description Returns the number of unused recovery codes remaining
+// @Tags auth
+// @Security BearerAuth
+// @Produce json
+// @Success 200 {object} auth.RecoveryCodesStatusResponse
+// @Failure 401 {object} apperrors.ErrorResponse
+// @Router /auth/2fa/recovery-codes [get]
+func (h *AuthHandler) GetRecoveryCodesStatus(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		apperrors.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+
+	var user models.User
+	if err := h.db.First(&user, userID).Error; err != nil {
+		apperrors.AbortWithError(c, apperrors.NewNotFoundError("User not found"))
+		return
+	}
+
+	var remaining int64
+	h.db.Model(&models.RecoveryCode{}).Where("user_id = ? AND used_at IS NULL", user.ID).Count(&remaining)
+
+	resp := RecoveryCodesStatusResponse{RemainingCodes: int(remaining)}
+	if user.RecoveryCodesGeneratedAt != nil {
+		resp.GeneratedAt = user.RecoveryCodesGeneratedAt.Format(time.RFC3339)
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// LoginWithRecoveryCode completes login using a single-use recovery code when
+// the user's 2FA device (TOTP) is unavailable. The code is consumed on success.
+// @Summary Login with a 2FA recovery code
+// @Description Complete authentication using a backup recovery code instead of a TOTP token
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param request body auth.RecoveryCodeLoginRequest true "User ID and recovery code"
+// @Success 200 {object} auth.TokenResponse
+// @Failure 400 {object} apperrors.ErrorResponse
+// @Failure 401 {object} apperrors.ErrorResponse
+// @Router /auth/2fa/recovery-codes/login [post]
+func (h *AuthHandler) LoginWithRecoveryCode(c *gin.Context) {
+	var req RecoveryCodeLoginRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		apperrors.AbortWithError(c, apperrors.NewValidationError("Invalid request data", err))
+		return
+	}
+
+	var user models.User
+	if err := h.db.First(&user, req.UserID).Error; err != nil {
+		apperrors.AbortWithError(c, apperrors.NewUnauthorizedError("User not found"))
+		return
+	}
+
+	if !user.TOTPEnabled {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("2FA is not enabled for this user"))
+		return
+	}
+
+	normalized := normalizeRecoveryCode(req.RecoveryCode)
+
+	var codes []models.RecoveryCode
+	if err := h.db.Where("user_id = ? AND used_at IS NULL", user.ID).Find(&codes).Error; err != nil {
+		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to verify recovery code"))
+		return
+	}
+
+	var matched *models.RecoveryCode
+	for i := range codes {
+		if bcrypt.CompareHashAndPassword([]byte(codes[i].CodeHash), []byte(normalized)) == nil {
+			matched = &codes[i]
+			break
+		}
+	}
+
+	if matched == nil {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Invalid or already used recovery code"))
+		return
+	}
+
+	now := time.Now()
+	matched.UsedAt = &now
+	if err := h.db.Save(matched).Error; err != nil {
+		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to consume recovery code"))
+		return
+	}
+
+	user.LastLoginAt = &now
+	h.db.Save(&user)
+
+	accessToken, refreshToken, err := h.generateTokens(&user)
+	if err != nil {
+		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to generate tokens"))
+		return
+	}
+
+	session := models.UserSession{
+		UserID:       user.ID,
+		SessionToken: generateSecureToken(),
+		IPAddress:    c.ClientIP(),
+		UserAgent:    c.GetHeader("User-Agent"),
+		ExpiresAt:    time.Now().Add(time.Hour * time.Duration(h.config.RefreshTokenHours)),
+	}
+	h.db.Create(&session)
+
+	c.JSON(http.StatusOK, TokenResponse{
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		TokenType:    "Bearer",
+		ExpiresIn:    int64(h.config.JWTExpirationHours * 3600),
+		User:         toUserInfo(&user),
+	})
+}
+
 // LoginWith2FA handles the second step of 2FA login
 func (h *AuthHandler) LoginWith2FA(c *gin.Context) {
 	var req Verify2FARequest
@@ -719,10 +941,55 @@ func (h *AuthHandler) generateTokens(user *models.User) (string, string, error) 
 	return accessStr, refreshStr, nil
 }
 
+// recoveryCodeCount is the number of single-use recovery codes issued per generation.
+const recoveryCodeCount = 10
+
 func generateSecureToken() string {
 	b := make([]byte, 32)
 	rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// generateRecoveryCodes creates n random recovery codes formatted as
+// "XXXX-XXXX-XXXX" and returns both the plaintext values (shown once to the
+// user) and their bcrypt hashes (persisted for later verification).
+func generateRecoveryCodes(n int) (plain []string, hashed []string, err error) {
+	plain = make([]string, n)
+	hashed = make([]string, n)
+	for i := 0; i < n; i++ {
+		code, genErr := generateRecoveryCode()
+		if genErr != nil {
+			return nil, nil, genErr
+		}
+		hash, hashErr := bcrypt.GenerateFromPassword([]byte(normalizeRecoveryCode(code)), bcrypt.DefaultCost)
+		if hashErr != nil {
+			return nil, nil, hashErr
+		}
+		plain[i] = code
+		hashed[i] = string(hash)
+	}
+	return plain, hashed, nil
+}
+
+func generateRecoveryCode() (string, error) {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	chars := make([]byte, 12)
+	for i, v := range b {
+		chars[i] = alphabet[int(v)%len(alphabet)]
+	}
+	return fmt.Sprintf("%s-%s-%s", chars[0:4], chars[4:8], chars[8:12]), nil
+}
+
+// normalizeRecoveryCode strips formatting and standardizes case so that
+// user-entered codes match what was stored regardless of separators/case.
+func normalizeRecoveryCode(code string) string {
+	code = strings.ReplaceAll(code, "-", "")
+	code = strings.ReplaceAll(code, " ", "")
+	return strings.ToUpper(strings.TrimSpace(code))
 }
 
 func generateTOTPSecret() string {

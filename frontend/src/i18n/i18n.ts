@@ -1,36 +1,16 @@
-import i18n from 'i18next';
-import LanguageDetector from 'i18next-browser-languagedetector';
-import HttpApi from 'i18next-http-backend';
-import { initReactI18next } from 'react-i18next';
-import enTranslations from './locales/en.json';
-import esTranslations from './locales/es.json';
-import zhTranslations from './locales/zh.json';
+import { getRequestConfig } from 'next-intl/server';
+import { cookies } from 'next/headers';
 
-const resources = {
-  en: { translation: enTranslations },
-  es: { translation: esTranslations },
-  zh: { translation: zhTranslations },
-};
+export const locales = ['en', 'es', 'zh', 'fr'] as const;
+export type Locale = typeof locales[number];
+export const defaultLocale: Locale = 'en';
 
-i18n
-  .use(HttpApi)
-  .use(LanguageDetector)
-  .use(initReactI18next)
-  .init({
-    resources,
-    fallbackLng: 'en',
-    ns: ['translation'],
-    defaultNS: 'translation',
-    interpolation: {
-      escapeValue: false,
-    },
-    detection: {
-      order: ['localStorage', 'navigator'],
-      caches: ['localStorage'],
-    },
-    react: {
-      useSuspense: false,
-    },
-  });
+export default getRequestConfig(async () => {
+  const cookieStore = await cookies();
+  const locale = cookieStore.get('NEXT_LOCALE')?.value || defaultLocale;
 
-export default i18n;
+  return {
+    locale,
+    messages: (await import(`./locales/${locale}.json`)).default,
+  };
+});

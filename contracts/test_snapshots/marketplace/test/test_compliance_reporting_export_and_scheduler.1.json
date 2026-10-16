@@ -642,226 +642,8 @@
                           }
                         }
                       ]
-                    },
-                    {
-                      "map": [
-                        {
-                          "key": {
-                            "symbol": "action"
-                          },
-                          "val": {
-                            "symbol": "purchase"
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "actor"
-                          },
-                          "val": {
-                            "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "amount"
-                          },
-                          "val": {
-                            "i128": {
-                              "hi": 0,
-                              "lo": 250
-                            }
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "asset_id"
-                          },
-                          "val": {
-                            "u64": 777
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "timestamp"
-                          },
-                          "val": {
-                            "u64": 0
-                          }
-                        }
-                      ]
                     }
                   ]
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          4095
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "ComplianceHistory"
-                },
-                {
-                  "u64": 777
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "ComplianceHistory"
-                    },
-                    {
-                      "u64": 777
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "vec": [
-                    {
-                      "map": [
-                        {
-                          "key": {
-                            "symbol": "asset_id"
-                          },
-                          "val": {
-                            "u64": 777
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "compliance_failures"
-                          },
-                          "val": {
-                            "u64": 0
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "holders"
-                          },
-                          "val": {
-                            "u32": 1
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "restricted_transfer_count"
-                          },
-                          "val": {
-                            "u64": 0
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "taxable_volume"
-                          },
-                          "val": {
-                            "i128": {
-                              "hi": 0,
-                              "lo": 250
-                            }
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "timestamp"
-                          },
-                          "val": {
-                            "u64": 0
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "transaction_count"
-                          },
-                          "val": {
-                            "u64": 1
-                          }
-                        },
-                        {
-                          "key": {
-                            "symbol": "volume"
-                          },
-                          "val": {
-                            "i128": {
-                              "hi": 0,
-                              "lo": 1250
-                            }
-                          }
-                        }
-                      ]
-                    }
-                  ]
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          4095
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "FirstHeldAt"
-                },
-                {
-                  "u64": 777
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "FirstHeldAt"
-                    },
-                    {
-                      "u64": 777
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "u64": 0
                 }
               }
             },
@@ -940,7 +722,7 @@
                         "symbol": "holders"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {
@@ -966,7 +748,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 250
+                          "lo": 0
                         }
                       }
                     },
@@ -977,7 +759,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 1250
+                          "lo": 1000
                         }
                       }
                     },
@@ -988,7 +770,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 1250
+                          "lo": 1000
                         }
                       }
                     }
@@ -1071,7 +853,7 @@
                         "symbol": "holders"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {
@@ -1097,7 +879,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 250
+                          "lo": 0
                         }
                       }
                     },
@@ -1108,7 +890,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 1250
+                          "lo": 1000
                         }
                       }
                     },
@@ -1119,62 +901,11 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 1250
+                          "lo": 1000
                         }
                       }
                     }
                   ]
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          4095
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "HolderSeen"
-                },
-                {
-                  "u64": 777
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "HolderSeen"
-                    },
-                    {
-                      "u64": 777
-                    },
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "bool": true
                 }
               }
             },
@@ -1400,21 +1131,6 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "HolderCount"
-                            },
-                            {
-                              "u64": 777
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u32": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
                               "symbol": "ListingCount"
                             },
                             {
@@ -1494,39 +1210,6 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "TaxableVolume"
-                            },
-                            {
-                              "u64": 777
-                            }
-                          ]
-                        },
-                        "val": {
-                          "i128": {
-                            "hi": 0,
-                            "lo": 250
-                          }
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "TransactionCount"
-                            },
-                            {
-                              "u64": 777
-                            }
-                          ]
-                        },
-                        "val": {
-                          "u64": 1
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
                               "symbol": "Volume"
                             },
                             {
@@ -1537,7 +1220,7 @@
                         "val": {
                           "i128": {
                             "hi": 0,
-                            "lo": 1250
+                            "lo": 1000
                           }
                         }
                       }
@@ -2225,7 +1908,7 @@
                         "symbol": "holders"
                       },
                       "val": {
-                        "u32": 1
+                        "u32": 0
                       }
                     },
                     {
@@ -2251,7 +1934,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 250
+                          "lo": 0
                         }
                       }
                     },
@@ -2262,7 +1945,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 1250
+                          "lo": 1000
                         }
                       }
                     },
@@ -2273,7 +1956,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 1250
+                          "lo": 1000
                         }
                       }
                     }

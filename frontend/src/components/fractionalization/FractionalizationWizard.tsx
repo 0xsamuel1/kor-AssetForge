@@ -54,7 +54,7 @@ export function FractionalizationWizard({ wallet }: FractionalizationWizardProps
           asset_id: config.assetId,
           fraction_count: config.fractionCount,
           price_per_fraction: config.pricePerFraction,
-          wallet_address: wallet.address,
+          wallet_address: wallet.publicKey,
         }),
       });
 
@@ -131,7 +131,7 @@ export function FractionalizationWizard({ wallet }: FractionalizationWizardProps
           onSubmit={handleConfirmSubmit}
           onBack={handleBack}
           isSubmitting={isSubmitting}
-          walletAddress={wallet.address}
+          walletAddress={wallet.publicKey}
         />
       )}
     </div>

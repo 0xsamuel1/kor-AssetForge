@@ -7,7 +7,7 @@ import { EscrowRecord } from "./EscrowList";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { Gavel } from "lucide-react";
 
 interface DisputePanelProps {

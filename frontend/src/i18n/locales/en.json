@@ -66,5 +66,28 @@
     "documents": "Documents",
     "aml_screen": "AML Screening",
     "accredited": "Accredited Investor"
+  },
+  "onboarding": {
+    "welcome_title": "Welcome to kor-AssetForge",
+    "welcome_subtitle": "The decentralized marketplace for tokenizing and trading real-world assets on the Stellar network.",
+    "features_title": "Platform Features",
+    "features_subtitle": "Discover everything you can do on kor-AssetForge",
+    "wallet_title": "Wallet Setup",
+    "wallet_subtitle": "Connect your Stellar wallet to interact with the platform",
+    "kyc_title": "Identity Verification (KYC)",
+    "kyc_subtitle": "Complete KYC verification to unlock full platform features including trading and staking",
+    "completion_title": "You're All Set!",
+    "completion_subtitle": "You've completed the onboarding tour.",
+    "skip": "Skip Tour",
+    "next": "Next",
+    "back": "Back",
+    "start": "Get Started",
+    "done": "Start Using kor-AssetForge",
+    "tour_button": "Tour",
+    "step_welcome": "Welcome",
+    "step_features": "Features",
+    "step_wallet": "Wallet",
+    "step_kyc": "KYC",
+    "step_done": "Done"
   }
 }

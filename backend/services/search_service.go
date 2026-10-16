@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/yourusername/kor-assetforge/models"
-
 	"github.com/elastic/go-elasticsearch/v8"
+	searchconfig "github.com/yourusername/kor-assetforge/config"
+	searchmetrics "github.com/yourusername/kor-assetforge/metrics"
+	"github.com/yourusername/kor-assetforge/models"
 	"gorm.io/gorm"
 )
 
@@ -23,6 +26,8 @@ type SearchRequest struct {
 	MaxPrice    *int64            `form:"max_price"`
 	Location    string            `form:"location"`
 	Locations   []string          `form:"location"`
+	Categories  []string          `form:"category"`
+	Tags        []string          `form:"tag"`
 	CreatedFrom *time.Time        `form:"created_from" time_format:"2006-01-02"`
 	CreatedTo   *time.Time        `form:"created_to" time_format:"2006-01-02"`
 	Verified    *bool             `form:"verified"`
@@ -31,16 +36,18 @@ type SearchRequest struct {
 	Order       string            `form:"order"`   // asc | desc
 	Page        int               `form:"page"`
 	Limit       int               `form:"limit"`
+	UserID      uint              `form:"-"`
 }
 
 // SearchResult is the paginated response envelope.
 type SearchResult struct {
-	Total  int64          `json:"total"`
-	Page   int            `json:"page"`
-	Limit  int            `json:"limit"`
-	Assets []models.Asset `json:"assets"`
-	Facets SearchFacets   `json:"facets"`
-	Took   float64        `json:"took_ms"` // query duration in milliseconds
+	Total          int64          `json:"total"`
+	Page           int            `json:"page"`
+	Limit          int            `json:"limit"`
+	Assets         []models.Asset `json:"assets"`
+	Facets         SearchFacets   `json:"facets"`
+	Took           float64        `json:"took_ms"` // query duration in milliseconds
+	RankingVariant string         `json:"ranking_variant,omitempty"`
 }
 
 // SearchFacets carries aggregated filter counts for faceted navigation.
@@ -48,6 +55,8 @@ type SearchFacets struct {
 	AssetTypes []FacetBucket `json:"asset_types"`
 	Locations  []FacetBucket `json:"locations"`
 	Verified   []FacetBucket `json:"verified"`
+	Categories []FacetBucket `json:"categories"`
+	Tags       []FacetBucket `json:"tags"`
 }
 
 // FacetBucket is a single facet value with its document count.
@@ -124,6 +133,20 @@ func (s *DBSearchBackend) Search(ctx context.Context, req *SearchRequest) (*Sear
 	}
 	if locations := req.locations(); len(locations) > 0 {
 		q = q.Where("NULLIF(metadata, '')::jsonb ->> 'location' IN ?", locations)
+	}
+	if len(req.Categories) > 0 {
+		categoryAssets := s.db.Table("asset_categories").
+			Select("asset_categories.asset_id").
+			Joins("JOIN categories ON categories.id = asset_categories.category_id").
+			Where("categories.slug IN ? AND categories.deleted_at IS NULL", cleanValues(req.Categories))
+		q = q.Where("id IN (?)", categoryAssets)
+	}
+	if len(req.Tags) > 0 {
+		tagAssets := s.db.Table("asset_tags").
+			Select("asset_tags.asset_id").
+			Joins("JOIN tags ON tags.id = asset_tags.tag_id").
+			Where("tags.slug IN ? AND tags.deleted_at IS NULL", cleanValues(req.Tags))
+		q = q.Where("id IN (?)", tagAssets)
 	}
 	if req.CreatedFrom != nil {
 		q = q.Where("created_at >= ?", req.CreatedFrom.UTC())
@@ -205,20 +228,38 @@ func (s *DBSearchBackend) Suggest(ctx context.Context, query string, limit int) 
 	if term == "" {
 		return &SuggestResult{Suggestions: []string{}}, nil
 	}
-	like := term + "%"
+	like := strings.ToLower(term) + "%"
 
-	// Raw SQL with DISTINCT avoids GORM ambiguity and works across all drivers.
 	type row struct{ Name string }
 	var names []row
-	s.db.WithContext(ctx).
-		Raw("SELECT DISTINCT name FROM assets WHERE deleted_at IS NULL AND (name ILIKE ? OR symbol ILIKE ?) LIMIT ?",
-			like, like, limit).
-		Scan(&names)
-
-	suggestions := make([]string, 0, len(names))
+	// LOWER + LIKE works in PostgreSQL and SQLite, which keeps the fallback and
+	// its tests portable. A wider candidate set enables typo-tolerant ranking.
+	if err := s.db.WithContext(ctx).Model(&models.Asset{}).
+		Select("DISTINCT name").
+		Where("LOWER(name) LIKE ? OR LOWER(symbol) LIKE ?", like, like).
+		Limit(limit).Scan(&names).Error; err != nil {
+		return nil, err
+	}
+	suggestions := make([]string, 0, limit)
 	for _, r := range names {
 		suggestions = append(suggestions, r.Name)
 	}
+	if len(suggestions) < limit {
+		var candidates []row
+		if err := s.db.WithContext(ctx).Model(&models.Asset{}).
+			Select("DISTINCT name").Limit(200).Scan(&candidates).Error; err == nil {
+			sort.SliceStable(candidates, func(i, j int) bool {
+				return typoDistance(candidates[i].Name, term) < typoDistance(candidates[j].Name, term)
+			})
+			threshold := maxInt(2, len([]rune(term))/3)
+			for _, candidate := range candidates {
+				if typoDistance(candidate.Name, term) <= threshold {
+					suggestions = append(suggestions, candidate.Name)
+				}
+			}
+		}
+	}
+	suggestions = dedupeStrings(suggestions, limit)
 	return &SuggestResult{Suggestions: suggestions}, nil
 }
 
@@ -254,12 +295,35 @@ func (s *DBSearchBackend) buildFacets(ctx context.Context, req *SearchRequest) S
 	}
 	sort.Slice(typeFacets, func(i, j int) bool { return typeFacets[i].Value < typeFacets[j].Value })
 	sort.Slice(locationFacets, func(i, j int) bool { return locationFacets[i].Value < locationFacets[j].Value })
+	type namedBucket struct {
+		Value string
+		Count int64
+	}
+	var categoryBuckets, tagBuckets []namedBucket
+	s.db.WithContext(ctx).Table("asset_categories").
+		Select("categories.slug AS value, COUNT(DISTINCT asset_categories.asset_id) AS count").
+		Joins("JOIN categories ON categories.id = asset_categories.category_id").
+		Where("categories.deleted_at IS NULL").Group("categories.slug").Scan(&categoryBuckets)
+	s.db.WithContext(ctx).Table("asset_tags").
+		Select("tags.slug AS value, COUNT(DISTINCT asset_tags.asset_id) AS count").
+		Joins("JOIN tags ON tags.id = asset_tags.tag_id").
+		Where("tags.deleted_at IS NULL").Group("tags.slug").Scan(&tagBuckets)
+	categoryFacets := make([]FacetBucket, 0, len(categoryBuckets))
+	for _, bucket := range categoryBuckets {
+		categoryFacets = append(categoryFacets, FacetBucket{Value: bucket.Value, Count: bucket.Count})
+	}
+	tagFacets := make([]FacetBucket, 0, len(tagBuckets))
+	for _, bucket := range tagBuckets {
+		tagFacets = append(tagFacets, FacetBucket{Value: bucket.Value, Count: bucket.Count})
+	}
 
 	_ = req
 	return SearchFacets{
 		AssetTypes: typeFacets,
 		Locations:  locationFacets,
 		Verified:   []FacetBucket{{Value: "true", Count: verifiedCount}, {Value: "false", Count: unverifiedCount}},
+		Categories: categoryFacets,
+		Tags:       tagFacets,
 	}
 }
 
@@ -278,6 +342,9 @@ func (req *SearchRequest) Validate() error {
 	}
 	if len(req.Metadata) > 10 {
 		return fmt.Errorf("at most 10 metadata filters are allowed")
+	}
+	if len(req.Categories) > 20 || len(req.Tags) > 20 {
+		return fmt.Errorf("at most 20 categories or tags are allowed")
 	}
 	for key, value := range req.Metadata {
 		if strings.TrimSpace(key) == "" || len(key) > 64 || len(value) > 256 {
@@ -321,6 +388,21 @@ func (req *SearchRequest) locations() []string {
 	return nil
 }
 
+func cleanValues(values []string) []string {
+	seen := make(map[string]bool)
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" && !seen[part] {
+				seen[part] = true
+				result = append(result, part)
+			}
+		}
+	}
+	return result
+}
+
 // IndexAsset is a no-op for the DB backend
 func (s *DBSearchBackend) IndexAsset(ctx context.Context, asset *models.Asset) error {
 	return nil
@@ -345,64 +427,77 @@ func (s *DBSearchBackend) RecordAnalytics(ctx context.Context, event *SearchAnal
 
 // AssetDocument represents how an asset is indexed in Elasticsearch
 type AssetDocument struct {
-	ID           uint              `json:"id"`
-	Name         string            `json:"name"`
-	Symbol       string            `json:"symbol"`
-	Description  string            `json:"description"`
-	AssetType    string            `json:"asset_type"`
-	TotalSupply  int64             `json:"total_supply"`
-	Fractions    uint64            `json:"fractions"`
-	ContractID   string            `json:"contract_id"`
-	OwnerAddress string            `json:"owner_address"`
-	Metadata     map[string]string `json:"metadata"`
-	Location     string            `json:"location"`
-	CurrentPrice int64             `json:"current_price"`
-	ImageURL     string            `json:"image_url"`
-	DocumentURL  string            `json:"document_url"`
-	Verified     bool              `json:"verified"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
-	SearchText   string            `json:"search_text"`
+	ID              uint              `json:"id"`
+	Name            string            `json:"name"`
+	Symbol          string            `json:"symbol"`
+	Description     string            `json:"description"`
+	AssetType       string            `json:"asset_type"`
+	TotalSupply     int64             `json:"total_supply"`
+	Fractions       uint64            `json:"fractions"`
+	ContractID      string            `json:"contract_id"`
+	OwnerAddress    string            `json:"owner_address"`
+	Metadata        map[string]string `json:"metadata"`
+	Location        string            `json:"location"`
+	CurrentPrice    int64             `json:"current_price"`
+	ImageURL        string            `json:"image_url"`
+	DocumentURL     string            `json:"document_url"`
+	Verified        bool              `json:"verified"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+	SearchText      string            `json:"search_text"`
+	Categories      []string          `json:"categories,omitempty"`
+	Tags            []string          `json:"tags,omitempty"`
+	PopularityScore float64           `json:"popularity_score"`
 }
 
 // ESSearchBackend integrates with Elasticsearch with transparent fallback to DB
 type ESSearchBackend struct {
-	client    *elasticsearch.Client
-	dbBackend SearchBackend // fallback
-	indexName string
+	client        *elasticsearch.Client
+	dbBackend     SearchBackend // fallback
+	indexName     string
+	stateMu       sync.RWMutex
+	esAvailable   bool
+	lastProbe     time.Time
+	probeInterval time.Duration
+	ranker        *SearchRanker
 }
 
 // NewESSearchBackend creates an ESSearchBackend with real Elasticsearch integration
 func NewESSearchBackend(esBaseURL string, db *gorm.DB) (SearchBackend, error) {
+	es := &ESSearchBackend{
+		dbBackend:     NewDBSearchBackend(db),
+		indexName:     "assets",
+		probeInterval: 15 * time.Second,
+		ranker:        NewSearchRanker(db, searchconfig.LoadSearchConfig()),
+	}
+	if strings.TrimSpace(esBaseURL) == "" {
+		searchmetrics.ElasticsearchAvailable.Set(0)
+		return es, nil
+	}
 	cfg := elasticsearch.Config{
 		Addresses: []string{esBaseURL},
 	}
 	client, err := elasticsearch.NewClient(cfg)
 	if err != nil {
-		// Fall back to DB-only if ES unavailable
-		return &ESSearchBackend{
-			client:    nil,
-			dbBackend: NewDBSearchBackend(db),
-			indexName: "assets",
-		}, nil
+		searchmetrics.ElasticsearchAvailable.Set(0)
+		return es, nil
 	}
+	es.client = client
 
 	// Verify ES connection
-	res, err := client.Info(context.Background())
+	res, err := client.Info(client.Info.WithContext(context.Background()))
 	if err != nil || res.IsError() {
-		// Fall back to DB if ES is down
-		return &ESSearchBackend{
-			client:    nil,
-			dbBackend: NewDBSearchBackend(db),
-			indexName: "assets",
-		}, nil
+		if res != nil {
+			res.Body.Close()
+		}
+		es.lastProbe = time.Now()
+		searchmetrics.ElasticsearchAvailable.Set(0)
+		log.Printf("search: Elasticsearch unavailable at startup; database fallback enabled")
+		return es, nil
 	}
-
-	es := &ESSearchBackend{
-		client:    client,
-		dbBackend: NewDBSearchBackend(db),
-		indexName: "assets",
-	}
+	res.Body.Close()
+	es.esAvailable = true
+	searchmetrics.ElasticsearchAvailable.Set(1)
 
 	// Initialize Elasticsearch index with analyzers
 	if err := es.initializeIndex(context.Background()); err != nil {
@@ -410,6 +505,78 @@ func NewESSearchBackend(esBaseURL string, db *gorm.DB) (SearchBackend, error) {
 	}
 
 	return es, nil
+}
+
+// elasticsearchReady probes a degraded connection periodically. Keeping the
+// client while degraded lets normal traffic recover automatically without a
+// process restart once Elasticsearch becomes healthy again.
+func (es *ESSearchBackend) elasticsearchReady(ctx context.Context) bool {
+	if es.client == nil {
+		return false
+	}
+	es.stateMu.RLock()
+	available, lastProbe := es.esAvailable, es.lastProbe
+	es.stateMu.RUnlock()
+	if available {
+		return true
+	}
+	if time.Since(lastProbe) < es.probeInterval {
+		return false
+	}
+
+	es.stateMu.Lock()
+	if es.esAvailable {
+		es.stateMu.Unlock()
+		return true
+	}
+	if time.Since(es.lastProbe) < es.probeInterval {
+		es.stateMu.Unlock()
+		return false
+	}
+	es.lastProbe = time.Now()
+	es.stateMu.Unlock()
+
+	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	res, err := es.client.Info(es.client.Info.WithContext(probeCtx))
+	if err != nil || res.IsError() {
+		if res != nil {
+			res.Body.Close()
+		}
+		return false
+	}
+	res.Body.Close()
+	es.stateMu.Lock()
+	es.esAvailable = true
+	es.stateMu.Unlock()
+	searchmetrics.ElasticsearchAvailable.Set(1)
+	searchmetrics.ElasticsearchRecoveries.Inc()
+	log.Printf("search: Elasticsearch connection recovered; ending database fallback")
+	return true
+}
+
+func (es *ESSearchBackend) markUnavailable(reason string) {
+	es.stateMu.Lock()
+	wasAvailable := es.esAvailable
+	es.esAvailable = false
+	es.lastProbe = time.Now()
+	es.stateMu.Unlock()
+	searchmetrics.ElasticsearchAvailable.Set(0)
+	if wasAvailable {
+		log.Printf("search: Elasticsearch became unavailable (%s); database fallback enabled", reason)
+	}
+}
+
+func (es *ESSearchBackend) fallback(ctx context.Context, operation, reason string, fn func() (interface{}, error)) (interface{}, error) {
+	searchmetrics.SearchFallbacks.WithLabelValues(operation, reason).Inc()
+	searchmetrics.SearchBackendRequests.WithLabelValues(operation, "database").Inc()
+	start := time.Now()
+	result, err := fn()
+	searchmetrics.SearchBackendDuration.WithLabelValues(operation, "database").Observe(time.Since(start).Seconds())
+	if err != nil {
+		log.Printf("search: database fallback failed operation=%s reason=%s error=%v", operation, reason, err)
+	}
+	return result, err
 }
 
 // initializeIndex creates the Elasticsearch index with custom analyzers
@@ -421,7 +588,11 @@ func (es *ESSearchBackend) initializeIndex(ctx context.Context) error {
 	// Check if index exists
 	res, _ := es.client.Indices.Exists([]string{es.indexName})
 	if res != nil && !res.IsError() {
+		res.Body.Close()
 		return nil // Index already exists
+	}
+	if res != nil {
+		res.Body.Close()
 	}
 
 	indexMapping := map[string]interface{}{
@@ -444,24 +615,27 @@ func (es *ESSearchBackend) initializeIndex(ctx context.Context) error {
 		},
 		"mappings": map[string]interface{}{
 			"properties": map[string]interface{}{
-				"id":            map[string]interface{}{"type": "keyword"},
-				"name":          map[string]interface{}{"type": "text", "analyzer": "asset_analyzer", "fields": map[string]interface{}{"keyword": map[string]interface{}{"type": "keyword"}}},
-				"symbol":        map[string]interface{}{"type": "keyword"},
-				"description":   map[string]interface{}{"type": "text", "analyzer": "asset_analyzer"},
-				"asset_type":    map[string]interface{}{"type": "keyword"},
-				"total_supply":  map[string]interface{}{"type": "long"},
-				"fractions":     map[string]interface{}{"type": "long"},
-				"contract_id":   map[string]interface{}{"type": "keyword"},
-				"owner_address": map[string]interface{}{"type": "keyword"},
-				"metadata":      map[string]interface{}{"type": "object"},
-				"location":      map[string]interface{}{"type": "keyword"},
-				"current_price": map[string]interface{}{"type": "long"},
-				"image_url":     map[string]interface{}{"type": "keyword"},
-				"document_url":  map[string]interface{}{"type": "keyword"},
-				"verified":      map[string]interface{}{"type": "boolean"},
-				"created_at":    map[string]interface{}{"type": "date"},
-				"updated_at":    map[string]interface{}{"type": "date"},
-				"search_text":   map[string]interface{}{"type": "text", "analyzer": "asset_analyzer"},
+				"id":               map[string]interface{}{"type": "keyword"},
+				"name":             map[string]interface{}{"type": "text", "analyzer": "asset_analyzer", "fields": map[string]interface{}{"keyword": map[string]interface{}{"type": "keyword"}}},
+				"symbol":           map[string]interface{}{"type": "keyword"},
+				"description":      map[string]interface{}{"type": "text", "analyzer": "asset_analyzer"},
+				"asset_type":       map[string]interface{}{"type": "keyword"},
+				"total_supply":     map[string]interface{}{"type": "long"},
+				"fractions":        map[string]interface{}{"type": "long"},
+				"contract_id":      map[string]interface{}{"type": "keyword"},
+				"owner_address":    map[string]interface{}{"type": "keyword"},
+				"metadata":         map[string]interface{}{"type": "object"},
+				"location":         map[string]interface{}{"type": "keyword"},
+				"current_price":    map[string]interface{}{"type": "long"},
+				"image_url":        map[string]interface{}{"type": "keyword"},
+				"document_url":     map[string]interface{}{"type": "keyword"},
+				"verified":         map[string]interface{}{"type": "boolean"},
+				"created_at":       map[string]interface{}{"type": "date"},
+				"updated_at":       map[string]interface{}{"type": "date"},
+				"search_text":      map[string]interface{}{"type": "text", "analyzer": "asset_analyzer"},
+				"categories":       map[string]interface{}{"type": "text", "analyzer": "asset_analyzer", "fields": map[string]interface{}{"keyword": map[string]interface{}{"type": "keyword"}}},
+				"tags":             map[string]interface{}{"type": "text", "analyzer": "asset_analyzer", "fields": map[string]interface{}{"keyword": map[string]interface{}{"type": "keyword"}}},
+				"popularity_score": map[string]interface{}{"type": "double"},
 			},
 		},
 	}
@@ -469,8 +643,12 @@ func (es *ESSearchBackend) initializeIndex(ctx context.Context) error {
 	body, _ := json.Marshal(indexMapping)
 	res, err := es.client.Indices.Create(es.indexName, es.client.Indices.Create.WithBody(strings.NewReader(string(body))))
 	if err != nil || res.IsError() {
+		if res != nil {
+			res.Body.Close()
+		}
 		return fmt.Errorf("failed to create ES index: %w", err)
 	}
+	res.Body.Close()
 
 	return nil
 }
@@ -482,17 +660,27 @@ func (es *ESSearchBackend) Search(ctx context.Context, req *SearchRequest) (*Sea
 	// Listings are the price authority and custom metadata is stored as JSON in
 	// PostgreSQL. Use the DB planner for combinations that ES cannot join safely.
 	if req.MinPrice != nil || req.MaxPrice != nil || len(req.Metadata) > 0 {
-		return es.dbBackend.Search(ctx, req)
+		start := time.Now()
+		result, err := es.dbBackend.Search(ctx, req)
+		searchmetrics.SearchBackendRequests.WithLabelValues("search", "database").Inc()
+		searchmetrics.SearchBackendDuration.WithLabelValues("search", "database").Observe(time.Since(start).Seconds())
+		return result, err
 	}
 	req.normalizePagination()
-	if es.client == nil {
-		return es.dbBackend.Search(ctx, req)
+	if !es.elasticsearchReady(ctx) {
+		result, err := es.fallback(ctx, "search", "unavailable", func() (interface{}, error) {
+			return es.dbBackend.Search(ctx, req)
+		})
+		if result == nil {
+			return nil, err
+		}
+		return result.(*SearchResult), err
 	}
 
 	startTime := time.Now()
 
 	// Build ES query
-	query := es.buildESQuery(req)
+	query, rankingVariant := es.buildESQueryContext(ctx, req)
 	body, _ := json.Marshal(query)
 
 	// Execute search
@@ -505,71 +693,80 @@ func (es *ESSearchBackend) Search(ctx context.Context, req *SearchRequest) (*Sea
 	)
 
 	if err != nil || res.IsError() {
-		// Fall back to DB search on error
-		return es.dbBackend.Search(ctx, req)
+		if res != nil {
+			res.Body.Close()
+		}
+		es.markUnavailable("search request failed")
+		result, fallbackErr := es.fallback(ctx, "search", "request_error", func() (interface{}, error) {
+			return es.dbBackend.Search(ctx, req)
+		})
+		if result == nil {
+			return nil, fallbackErr
+		}
+		return result.(*SearchResult), fallbackErr
 	}
+	defer res.Body.Close()
 
 	// Parse response
-	var esResp map[string]interface{}
+	var esResp struct {
+		Hits struct {
+			Total struct {
+				Value int64 `json:"value"`
+			} `json:"total"`
+			Hits []struct {
+				Source AssetDocument `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
 	if err := json.NewDecoder(res.Body).Decode(&esResp); err != nil {
-		return es.dbBackend.Search(ctx, req)
+		result, fallbackErr := es.fallback(ctx, "search", "invalid_response", func() (interface{}, error) {
+			return es.dbBackend.Search(ctx, req)
+		})
+		if result == nil {
+			return nil, fallbackErr
+		}
+		return result.(*SearchResult), fallbackErr
 	}
 
-	// Extract hits and total
-	hitsData := esResp["hits"].(map[string]interface{})
-	totalObj := hitsData["total"].(map[string]interface{})
-	total := int64(totalObj["value"].(float64))
-	hits := hitsData["hits"].([]interface{})
-
 	// Convert ES documents to Asset models
-	assets := make([]models.Asset, 0, len(hits))
-	for _, hit := range hits {
-		hitObj := hit.(map[string]interface{})
-		source := hitObj["_source"].(map[string]interface{})
-
-		// Parse metadata
-		var metadata string
-		if m, ok := source["metadata"].(map[string]interface{}); ok {
-			metadataJSON, _ := json.Marshal(m)
-			metadata = string(metadataJSON)
-		}
-
+	assets := make([]models.Asset, 0, len(esResp.Hits.Hits))
+	for _, hit := range esResp.Hits.Hits {
+		source := hit.Source
+		metadataJSON, _ := json.Marshal(source.Metadata)
 		asset := models.Asset{
-			ID:           uint(source["id"].(float64)),
-			Name:         source["name"].(string),
-			Symbol:       source["symbol"].(string),
-			Description:  source["description"].(string),
-			AssetType:    source["asset_type"].(string),
-			TotalSupply:  int64(source["total_supply"].(float64)),
-			Fractions:    uint64(source["fractions"].(float64)),
-			ContractID:   source["contract_id"].(string),
-			OwnerAddress: source["owner_address"].(string),
-			Metadata:     metadata,
-			ImageURL:     source["image_url"].(string),
-			DocumentURL:  source["document_url"].(string),
-			Verified:     source["verified"].(bool),
+			ID: source.ID, Name: source.Name, Symbol: source.Symbol,
+			Description: source.Description, AssetType: source.AssetType,
+			TotalSupply: source.TotalSupply, Fractions: source.Fractions,
+			ContractID: source.ContractID, OwnerAddress: source.OwnerAddress,
+			Metadata: string(metadataJSON), ImageURL: source.ImageURL,
+			DocumentURL: source.DocumentURL, Verified: source.Verified,
+			CreatedAt: source.CreatedAt, UpdatedAt: source.UpdatedAt,
 		}
 		assets = append(assets, asset)
 	}
 
 	facets := es.buildESFacets(ctx, req)
 	duration := time.Since(startTime).Seconds() * 1000
+	searchmetrics.SearchBackendRequests.WithLabelValues("search", "elasticsearch").Inc()
+	searchmetrics.SearchBackendDuration.WithLabelValues("search", "elasticsearch").Observe(duration / 1000)
+	quality := 0.0
+	if esResp.Hits.Total.Value > 0 {
+		quality = 1
+	}
+	searchmetrics.SearchResultQuality.WithLabelValues("non_zero_results", rankingVariant).Observe(quality)
 
 	return &SearchResult{
-		Total:  total,
-		Page:   req.Page,
-		Limit:  req.Limit,
-		Assets: assets,
-		Facets: facets,
-		Took:   duration,
+		Total:          esResp.Hits.Total.Value,
+		Page:           req.Page,
+		Limit:          req.Limit,
+		Assets:         assets,
+		Facets:         facets,
+		Took:           duration,
+		RankingVariant: rankingVariant,
 	}, nil
 }
 
 func (es *ESSearchBackend) Suggest(ctx context.Context, query string, limit int) (*SuggestResult, error) {
-	if es.client == nil {
-		return es.dbBackend.Suggest(ctx, query, limit)
-	}
-
 	if limit <= 0 || limit > 20 {
 		limit = 10
 	}
@@ -577,6 +774,15 @@ func (es *ESSearchBackend) Suggest(ctx context.Context, query string, limit int)
 	term := strings.TrimSpace(query)
 	if term == "" {
 		return &SuggestResult{Suggestions: []string{}}, nil
+	}
+	if !es.elasticsearchReady(ctx) {
+		result, err := es.fallback(ctx, "suggest", "unavailable", func() (interface{}, error) {
+			return es.dbBackend.Suggest(ctx, query, limit)
+		})
+		if result == nil {
+			return nil, err
+		}
+		return result.(*SuggestResult), err
 	}
 
 	// Build completion suggester query
@@ -588,6 +794,7 @@ func (es *ESSearchBackend) Suggest(ctx context.Context, query string, limit int)
 					"field":           "name.completion",
 					"size":            limit,
 					"skip_duplicates": true,
+					"fuzzy":           map[string]interface{}{"fuzziness": "AUTO"},
 				},
 			},
 		},
@@ -601,13 +808,29 @@ func (es *ESSearchBackend) Suggest(ctx context.Context, query string, limit int)
 	)
 
 	if err != nil || res.IsError() {
-		// Fall back to DB
-		return es.dbBackend.Suggest(ctx, query, limit)
+		if res != nil {
+			res.Body.Close()
+		}
+		es.markUnavailable("suggest request failed")
+		result, fallbackErr := es.fallback(ctx, "suggest", "request_error", func() (interface{}, error) {
+			return es.dbBackend.Suggest(ctx, query, limit)
+		})
+		if result == nil {
+			return nil, fallbackErr
+		}
+		return result.(*SuggestResult), fallbackErr
 	}
+	defer res.Body.Close()
 
 	var esResp map[string]interface{}
 	if err := json.NewDecoder(res.Body).Decode(&esResp); err != nil {
-		return es.dbBackend.Suggest(ctx, query, limit)
+		result, fallbackErr := es.fallback(ctx, "suggest", "invalid_response", func() (interface{}, error) {
+			return es.dbBackend.Suggest(ctx, query, limit)
+		})
+		if result == nil {
+			return nil, fallbackErr
+		}
+		return result.(*SuggestResult), fallbackErr
 	}
 
 	suggestions := []string{}
@@ -625,6 +848,7 @@ func (es *ESSearchBackend) Suggest(ctx context.Context, query string, limit int)
 		}
 	}
 
+	searchmetrics.SearchBackendRequests.WithLabelValues("suggest", "elasticsearch").Inc()
 	return &SuggestResult{Suggestions: suggestions}, nil
 }
 
@@ -660,15 +884,26 @@ func (es *ESSearchBackend) IndexAsset(ctx context.Context, asset *models.Asset) 
 		UpdatedAt:    asset.UpdatedAt,
 		SearchText:   searchText,
 	}
+	if dbBackend, ok := es.dbBackend.(*DBSearchBackend); ok && dbBackend.db != nil {
+		dbBackend.db.Model(&models.Category{}).
+			Joins("JOIN asset_categories ON asset_categories.category_id = categories.id").
+			Where("asset_categories.asset_id = ?", asset.ID).Pluck("categories.slug", &doc.Categories)
+		dbBackend.db.Model(&models.Tag{}).
+			Joins("JOIN asset_tags ON asset_tags.tag_id = tags.id").
+			Where("asset_tags.asset_id = ?", asset.ID).Pluck("tags.slug", &doc.Tags)
+		var interactions int64
+		dbBackend.db.Model(&models.UserInteraction{}).Where("asset_id = ?", asset.ID).Count(&interactions)
+		doc.PopularityScore = float64(interactions)
+	}
 
 	body, _ := json.Marshal(doc)
 	docID := fmt.Sprintf("%d", asset.ID)
 
 	res, err := es.client.Index(
 		es.indexName,
+		strings.NewReader(string(body)),
 		es.client.Index.WithContext(ctx),
 		es.client.Index.WithDocumentID(docID),
-		es.client.Index.WithBody(strings.NewReader(string(body))),
 	)
 
 	if err != nil || res.IsError() {
@@ -723,8 +958,8 @@ func (es *ESSearchBackend) RecordAnalytics(ctx context.Context, event *SearchAna
 
 	res, err := es.client.Index(
 		analyticsIndex,
+		strings.NewReader(string(body)),
 		es.client.Index.WithContext(ctx),
-		es.client.Index.WithBody(strings.NewReader(string(body))),
 	)
 
 	if err != nil || res.IsError() {
@@ -735,17 +970,23 @@ func (es *ESSearchBackend) RecordAnalytics(ctx context.Context, event *SearchAna
 }
 
 func (es *ESSearchBackend) buildESQuery(req *SearchRequest) map[string]interface{} {
+	query, _ := es.buildESQueryContext(context.Background(), req)
+	return query
+}
+
+func (es *ESSearchBackend) buildESQueryContext(ctx context.Context, req *SearchRequest) (map[string]interface{}, string) {
 	filters := []map[string]interface{}{}
+	rankingVariant := RankingControl
 
 	// Full-text search on multiple fields with boosting
 	if term := strings.TrimSpace(req.Query); term != "" {
-		filters = append(filters, map[string]interface{}{
-			"multi_match": map[string]interface{}{
-				"query":     term,
-				"fields":    []string{"name^3", "symbol^2", "description", "search_text"},
-				"fuzziness": "AUTO",
-			},
-		})
+		ranker := es.ranker
+		if ranker == nil {
+			ranker = NewSearchRanker(nil, searchconfig.LoadSearchConfig())
+		}
+		ranked, variant := ranker.RankedQuery(ctx, req)
+		filters = append(filters, ranked)
+		rankingVariant = variant
 	}
 
 	// Asset type filter
@@ -758,6 +999,12 @@ func (es *ESSearchBackend) buildESQuery(req *SearchRequest) map[string]interface
 	}
 	if locations := req.locations(); len(locations) > 0 {
 		filters = append(filters, map[string]interface{}{"terms": map[string]interface{}{"location": locations}})
+	}
+	if categories := cleanValues(req.Categories); len(categories) > 0 {
+		filters = append(filters, map[string]interface{}{"terms": map[string]interface{}{"categories.keyword": categories}})
+	}
+	if tags := cleanValues(req.Tags); len(tags) > 0 {
+		filters = append(filters, map[string]interface{}{"terms": map[string]interface{}{"tags.keyword": tags}})
 	}
 	if req.CreatedFrom != nil || req.CreatedTo != nil {
 		dateRange := map[string]interface{}{}
@@ -784,11 +1031,15 @@ func (es *ESSearchBackend) buildESQuery(req *SearchRequest) map[string]interface
 
 	sort := []map[string]interface{}{}
 	sortBy := req.SortBy
-	if sortBy == "" {
+	if sortBy == "" && strings.TrimSpace(req.Query) != "" {
+		sortBy = "relevance"
+	} else if sortBy == "" {
 		sortBy = "created_at"
 	}
 
 	switch sortBy {
+	case "relevance":
+		sort = append(sort, map[string]interface{}{"_score": map[string]interface{}{"order": "desc"}})
 	case "name":
 		sort = append(sort, map[string]interface{}{"name.keyword": map[string]interface{}{"order": strings.ToLower(req.Order)}})
 	case "created_at":
@@ -816,7 +1067,7 @@ func (es *ESSearchBackend) buildESQuery(req *SearchRequest) map[string]interface
 	return map[string]interface{}{
 		"query": query,
 		"sort":  sort,
-	}
+	}, rankingVariant
 }
 
 func (es *ESSearchBackend) buildESFacets(ctx context.Context, req *SearchRequest) SearchFacets {

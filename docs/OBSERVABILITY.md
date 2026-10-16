@@ -4,13 +4,18 @@ Trace context propagation for `kor-AssetForge` (closes #317).
 
 ## Architecture
 
-- **Propagation standard:** W3C Trace Context (`traceparent`, `tracestate`).
-- **HTTP in:** `middleware.TracingMiddleware()` (`backend/middleware/tracing.go`)
-  extracts `traceparent` or starts a new trace, stores `TraceInfo`
-  in `context.Context`, and echoes `traceparent` + `X-Trace-ID`.
-- **Export stub:** `monitoring.InitializeTracing(ctx, service, collectorURL)`
-  records config and logs; swap its body for a real OTLP exporter once
-  `go.opentelemetry.io/*` deps are vendored — callers stay unchanged.
+- **Propagation standard:** W3C Trace Context (`traceparent`, `tracestate`)
+  via OTel (`middleware.TracingMiddleware`, `monitoring.InitializeTracing`).
+- **HTTP in:** `middleware.TracingMiddleware("kor-assetforge-api")`
+  (`backend/middleware/tracing.go`) extracts `traceparent` via the OTel
+  propagator, starts a server span with HTTP attributes, and echoes
+  `X-Trace-ID` (also set as `trace_id` for log correlation).
+- **Export:** `monitoring.InitializeTracing(ctx, service, collectorURL)`
+  configures the OTLP/HTTP exporter (10% sampler) and the W3C
+  TraceContext+Baggage propagator.
+- **Manual helpers:** `TraceIDFromContext` / `StartChildSpan` /
+  `StartJobSpan` / `InjectTraceHeaders` in the same file let services and
+  jobs forward trace IDs without importing OTel directly.
 - **Services:** all `services/*` methods already accept `ctx`; forward
   `c.Request.Context()` (or the job ctx) and use
   `middleware.StartChildSpan(ctx)` for each downstream call
@@ -25,16 +30,16 @@ Trace context propagation for `kor-AssetForge` (closes #317).
 
 ```go
 router.Use(
-    middleware.TracingMiddleware(),
+    middleware.TracingMiddleware("kor-assetforge-api"),
     handlers.RequestLogger(),
     ...
 )
 ```
 
-Startup / shutdown:
+Startup / shutdown (as wired in `main.go`):
 
 ```go
-tp, _ := monitoring.InitializeTracing(ctx, "kor-assetforge", os.Getenv("OTEL_COLLECTOR_URL"))
+tp, _ := monitoring.InitializeTracing(ctx, "kor-assetforge-api", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
 defer monitoring.ShutdownTracing(context.Background(), tp)
 ```
 
@@ -99,6 +104,6 @@ log := logger.WithTraceID(baseLogger, middleware.TraceIDFromContext(ctx))
 3. Services fan out with `StartChildSpan`; each DB/Redis/HTTP hop keeps the
    same `trace_id` with a new `span_id`.
 4. Jobs continue the trace via `jobs.RunTraced`.
-5. Point the OTLP collector at the service (`OTEL_COLLECTOR_URL`) and filter
+5. Point the OTLP collector at the service (`OTEL_EXPORTER_OTLP_ENDPOINT`) and filter
    by `trace_id` (== `X-Trace-ID` response header) in Jaeger/Tempo to see the
    full request → service → job waterfall.

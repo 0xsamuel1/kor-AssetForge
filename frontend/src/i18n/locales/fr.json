@@ -1,0 +1,93 @@
+{
+  "common": {
+    "app_name": "kor-AssetForge",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "cancel": "Cancel",
+    "save": "Save",
+    "delete": "Delete",
+    "edit": "Edit",
+    "close": "Close"
+  },
+  "auth": {
+    "login": "Login",
+    "register": "Register",
+    "logout": "Logout",
+    "email": "Email",
+    "password": "Password",
+    "confirm_password": "Confirm Password",
+    "forgot_password": "Forgot Password?",
+    "reset_password": "Reset Password",
+    "remember_me": "Remember me",
+    "login_title": "Sign in to kor-AssetForge",
+    "register_title": "Create your account",
+    "invalid_credentials": "Invalid email or password",
+    "passwords_dont_match": "Passwords do not match",
+    "email_required": "Email is required",
+    "password_required": "Password is required"
+  },
+  "errors": {
+    "network_error": "Network error. Please try again.",
+    "unauthorized": "You are not authorized to perform this action",
+    "forbidden": "Access forbidden",
+    "not_found": "Resource not found",
+    "server_error": "Server error. Please try again later",
+    "rate_limit_exceeded": "Too many requests. Please try again later",
+    "invalid_input": "Invalid input",
+    "something_went_wrong": "Something went wrong"
+  },
+  "assets": {
+    "title": "Assets",
+    "create": "Create Asset",
+    "tokenize": "Tokenize Asset",
+    "list": "Asset List",
+    "details": "Asset Details",
+    "name": "Name",
+    "description": "Description",
+    "value": "Value",
+    "status": "Status",
+    "created": "Created",
+    "updated": "Updated"
+  },
+  "marketplace": {
+    "title": "Marketplace",
+    "list_for_sale": "List for Sale",
+    "transfer": "Transfer",
+    "price": "Price",
+    "quantity": "Quantity",
+    "buy": "Buy",
+    "sell": "Sell"
+  },
+  "kyc": {
+    "title": "KYC",
+    "submit": "Submit KYC",
+    "status": "KYC Status",
+    "documents": "Documents",
+    "aml_screen": "AML Screening",
+    "accredited": "Accredited Investor"
+  },
+  "onboarding": {
+    "welcome_title": "Welcome to kor-AssetForge",
+    "welcome_subtitle": "The decentralized marketplace for tokenizing and trading real-world assets on the Stellar network.",
+    "features_title": "Platform Features",
+    "features_subtitle": "Discover everything you can do on kor-AssetForge",
+    "wallet_title": "Wallet Setup",
+    "wallet_subtitle": "Connect your Stellar wallet to interact with the platform",
+    "kyc_title": "Identity Verification (KYC)",
+    "kyc_subtitle": "Complete KYC verification to unlock full platform features including trading and staking",
+    "completion_title": "You're All Set!",
+    "completion_subtitle": "You've completed the onboarding tour.",
+    "skip": "Skip Tour",
+    "next": "Next",
+    "back": "Back",
+    "start": "Get Started",
+    "done": "Start Using kor-AssetForge",
+    "tour_button": "Tour",
+    "step_welcome": "Welcome",
+    "step_features": "Features",
+    "step_wallet": "Wallet",
+    "step_kyc": "KYC",
+    "step_done": "Done"
+  }
+}

@@ -2,12 +2,10 @@ package services
 
 import (
 	"errors"
-	"fmt"
-	"math"
 	"time"
 
-	"gorm.io/gorm"
 	"github.com/yourusername/kor-assetforge/models"
+	"gorm.io/gorm"
 )
 
 type MarketMakerService struct {
@@ -130,11 +128,11 @@ func (ms *MarketMakerService) UpdateInventory(botID, assetID uint, unitsChange i
 
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		inv = models.MarketMakerInventory{
-			BotID:             botID,
-			AssetID:           assetID,
-			HeldUnits:         unitsChange,
-			CostBasisStroops:  costBasisChange,
-			UpdatedAt:         time.Now(),
+			BotID:            botID,
+			AssetID:          assetID,
+			HeldUnits:        unitsChange,
+			CostBasisStroops: costBasisChange,
+			UpdatedAt:        time.Now(),
 		}
 		return ms.db.Create(&inv).Error
 	}
@@ -149,9 +147,9 @@ func (ms *MarketMakerService) UpdateInventory(botID, assetID uint, unitsChange i
 	}
 
 	return ms.db.Model(&inv).Updates(map[string]interface{}{
-		"held_units":       newHeldUnits,
+		"held_units":         newHeldUnits,
 		"cost_basis_stroops": inv.CostBasisStroops + costBasisChange,
-		"updated_at":       time.Now(),
+		"updated_at":         time.Now(),
 	}).Error
 }
 
@@ -238,12 +236,12 @@ func (ms *MarketMakerService) GetBotStats(botID uint) (map[string]interface{}, e
 		Row().Scan(&avgPrice)
 
 	return map[string]interface{}{
-		"bot_id":           botID,
-		"status":           bot.Status,
-		"total_volume":     bot.TotalVolumeStroops,
-		"profit_loss":      bot.ProfitLossStroops,
-		"trade_count":      tradeCount,
-		"avg_price":        avgPrice,
-		"uptime":           "N/A",
+		"bot_id":       botID,
+		"status":       bot.Status,
+		"total_volume": bot.TotalVolumeStroops,
+		"profit_loss":  bot.ProfitLossStroops,
+		"trade_count":  tradeCount,
+		"avg_price":    avgPrice,
+		"uptime":       "N/A",
 	}, nil
 }

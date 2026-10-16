@@ -26,6 +26,7 @@ type TransferAssetRequest struct {
 	FromAddress string `json:"from_address" binding:"required,stellar_address"`
 	ToAddress   string `json:"to_address" binding:"required,stellar_address"`
 	Amount      int64  `json:"amount" binding:"required,gt=0"`
+	Memo        string `json:"memo" binding:"omitempty,max=500,no_html"`
 }
 
 // PaginationQuery validates optional pagination parameters.
@@ -36,9 +37,10 @@ type PaginationQuery struct {
 
 // TransactionQuery validates transaction list query parameters.
 type TransactionQuery struct {
-	AssetID uint `form:"asset_id" binding:"omitempty,gt=0"`
-	Page    int  `form:"page" binding:"omitempty,min=1"`
-	Limit   int  `form:"limit" binding:"omitempty,min=1,max=100"`
+	AssetID uint   `form:"asset_id" binding:"omitempty,gt=0"`
+	Memo    string `form:"memo" binding:"omitempty,max=500"`
+	Page    int    `form:"page" binding:"omitempty,min=1"`
+	Limit   int    `form:"limit" binding:"omitempty,min=1,max=100"`
 }
 
 // AssetIDUri validates asset ID path parameters.

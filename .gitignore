@@ -40,6 +40,9 @@ dist/
 build/
 *.wasm
 
+# Test snapshots
+test_snapshots/
+
 # Logs
 *.log
 logs/
@@ -51,3 +54,4 @@ logs/
 Thumbs.db
 issue.md
 pr.md
+contracts/test_snapshots/

@@ -39,7 +39,10 @@ type KYCProvider interface {
 	// ScreenAML runs anti-money-laundering checks against watchlists.
 	ScreenAML(fullName, nationality string) (*AMLResult, error)
 
-	// VerifyAccreditedInvestor checks whether net-worth evidence meets the threshold.
+	// VerifyAccreditedInvestor checks whether net-worth evidence meets the
+	// US SEC net-worth threshold. See docs/ACCREDITED_INVESTOR_VERIFICATION.md
+	// for the full process, which tests are and are not implemented, and
+	// jurisdictional caveats.
 	VerifyAccreditedInvestor(userID uint, netWorthUSD float64) (bool, error)
 }
 
@@ -111,6 +114,20 @@ func (m *MockKYCProvider) ScreenAML(fullName, nationality string) (*AMLResult, e
 	}, nil
 }
 
+// VerifyAccreditedInvestor checks the self-attested net worth against the
+// US SEC net-worth test (Regulation D, Rule 501(a)(5)): net worth over
+// $1,000,000, excluding the investor's primary residence. The caller is
+// responsible for having already excluded the primary residence from
+// netWorthUSD -- this function only compares the number it is given.
+//
+// This is ONE of several SEC-recognized qualifying tests (income,
+// professional certification, and knowledgeable-employee status are not
+// implemented), and it is US-specific; other jurisdictions (EU, UK, etc.)
+// use different thresholds and definitions entirely. A `true` result is a
+// pass against this single numeric test, not a substitute for verifying the
+// supporting documents listed in docs/REQUIRED_DOCUMENTS.md -- see
+// docs/ACCREDITED_INVESTOR_VERIFICATION.md for the full process, known gaps,
+// and jurisdictional caveats (#378).
 func (m *MockKYCProvider) VerifyAccreditedInvestor(userID uint, netWorthUSD float64) (bool, error) {
 	// US SEC threshold: $1,000,000 net worth (excluding primary residence).
 	const threshold = 1_000_000.0

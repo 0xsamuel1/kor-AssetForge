@@ -41,6 +41,8 @@ pub enum OracleDataKey {
     OldestPriceTimestamp(u64),
     /// Price source type flag: OracleDataKey::SourceType(asset_id) -> u32 (0=manual, 1=chainlink, 2=band)
     SourceType(u64),
+    /// Marketplace contract address for price push
+    Marketplace,
 }
 
 // ---------------------------------------------------------------------------
@@ -719,6 +721,27 @@ impl Oracle {
             .instance()
             .get(&OracleDataKey::SourceType(asset_id))
             .unwrap_or(0)
+    }
+
+    // -----------------------------------------------------------------------
+    // Marketplace Integration
+    // -----------------------------------------------------------------------
+
+    /// Set the marketplace contract address for price push notifications.
+    pub fn set_marketplace(env: Env, caller: Address, marketplace: Address) {
+        require_admin(&env, &caller);
+        env.storage()
+            .instance()
+            .set(&OracleDataKey::Marketplace, &marketplace);
+        env.events().publish(
+            (Symbol::new(&env, "marketplace_set"),),
+            marketplace,
+        );
+    }
+
+    /// Get the marketplace contract address.
+    pub fn get_marketplace(env: Env) -> Option<Address> {
+        env.storage().instance().get(&OracleDataKey::Marketplace)
     }
 
     // -----------------------------------------------------------------------

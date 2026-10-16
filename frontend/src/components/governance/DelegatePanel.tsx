@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { Users, UserMinus } from "lucide-react";
+import { ButtonSpinner } from "@/components/LoadingSpinner";
 
 interface DelegatePanelProps {
   wallet: StellarWallet;
@@ -105,7 +106,8 @@ export function DelegatePanel({
               />
             </div>
             <Button onClick={delegate} disabled={isLoading} className="w-full">
-              {isLoading ? "Delegating..." : "Delegate Voting Power"}
+              {isLoading && <ButtonSpinner />}
+              {isLoading ? "Delegating…" : "Delegate Voting Power"}
             </Button>
           </div>
         )}

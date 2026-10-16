@@ -1078,7 +1078,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000001"
               },
               {
-                "symbol": "get_distribution"
+                "symbol": "get_dividend_distribution"
               }
             ],
             "data": {
@@ -1101,7 +1101,7 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_distribution"
+                "symbol": "get_dividend_distribution"
               }
             ],
             "data": {

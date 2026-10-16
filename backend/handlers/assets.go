@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 	"github.com/yourusername/kor-assetforge/apperrors"
+	"github.com/yourusername/kor-assetforge/config"
 	"github.com/yourusername/kor-assetforge/middleware"
 	"github.com/yourusername/kor-assetforge/models"
 	"github.com/yourusername/kor-assetforge/services"
@@ -23,19 +24,23 @@ import (
 )
 
 type AssetHandler struct {
-	db            *gorm.DB
-	stellarClient *utils.StellarClient
-	redisClient   *redis.Client
-	emailService  services.EmailService
-	workflow      *services.WorkflowService
+	db                *gorm.DB
+	stellarClient     *utils.StellarClient
+	redisClient       *redis.Client
+	emailService      services.EmailService
+	workflow          *services.WorkflowService
+	metadataService   *services.MetadataService
+	transferValidator *services.TransferValidator
 }
 
 func NewAssetHandler(db *gorm.DB, stellarClient *utils.StellarClient, redisClient *redis.Client, emailService services.EmailService, workflow ...*services.WorkflowService) *AssetHandler {
 	handler := &AssetHandler{
-		db:            db,
-		stellarClient: stellarClient,
-		redisClient:   redisClient,
-		emailService:  emailService,
+		db:                db,
+		stellarClient:     stellarClient,
+		redisClient:       redisClient,
+		emailService:      emailService,
+		metadataService:   services.NewMetadataService(db),
+		transferValidator: services.NewTransferValidator(db),
 	}
 	if len(workflow) > 0 {
 		handler.workflow = workflow[0]
@@ -68,6 +73,31 @@ func (h *AssetHandler) TokenizeAsset(c *gin.Context) {
 	if err := validator.ValidateStruct(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+
+	fractionHandler := NewFractionHandler(h.db)
+	assetConfig, _ := fractionHandler.GetApplicableConfig(req.AssetType)
+	if assetConfig != nil {
+		if req.Fractions > 0 {
+			fractionSize := float64(req.TotalSupply) / float64(req.Fractions)
+			if fractionSize < assetConfig.MinFractionSize {
+				apperrors.AbortWithError(c, apperrors.NewBadRequestError(
+					"Fraction size too small: minimum is "+fmt.Sprintf("%f", assetConfig.MinFractionSize)))
+				return
+			}
+			if fractionSize > assetConfig.MaxFractionSize {
+				apperrors.AbortWithError(c, apperrors.NewBadRequestError(
+					"Fraction size too large: maximum is "+fmt.Sprintf("%f", assetConfig.MaxFractionSize)))
+				return
+			}
+		}
+		if assetConfig.RequireAccreditation {
+			var user models.User
+			if err := h.db.First(&user, c.GetUint("user_id")).Error; err != nil || !user.AccreditedInvestor {
+				apperrors.AbortWithError(c, apperrors.NewForbiddenError("Accredited investor status required for this asset type"))
+				return
+			}
+		}
 	}
 
 	metadataJSON, _ := json.Marshal(req.Metadata)
@@ -165,7 +195,8 @@ func (h *AssetHandler) ListAssets(c *gin.Context) {
 
 	var assets []models.Asset
 	var total int64
-	if err := utils.Paginate(h.db, page, limit, &total, &assets); err != nil {
+	paginationRes, err := utils.Paginate(h.db.Model(&models.Asset{}), c, page, limit, &total, &assets)
+	if err != nil {
 		apperrors.AbortWithError(c, apperrors.Wrap(err, apperrors.CodeDatabaseError, "Failed to fetch assets", http.StatusInternalServerError))
 		return
 	}
@@ -217,6 +248,9 @@ func (h *AssetHandler) ListTransactions(c *gin.Context) {
 	query := h.db.Model(&models.Transaction{}).Order("created_at desc")
 	if queryParams.AssetID != 0 {
 		query = query.Where("asset_id = ?", queryParams.AssetID)
+	}
+	if queryParams.Memo != "" {
+		query = query.Where("memo ILIKE ?", "%"+queryParams.Memo+"%")
 	}
 
 	paginationRes, err := utils.Paginate(query, c, page, limit, &total, &transactions)
@@ -312,6 +346,21 @@ func (h *AssetHandler) ListAssetForSale(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Asset not found"})
 		return
 	}
+
+	// A seller not in good compliance standing cannot list, regardless of
+	// who ends up buying (#380).
+	if h.transferValidator != nil {
+		if err := h.transferValidator.ValidateSeller(req.SellerAddr); err != nil {
+			var violation *services.TransferRestrictionViolation
+			if errors.As(err, &violation) {
+				c.JSON(http.StatusForbidden, gin.H{"error": violation.Error()})
+				return
+			}
+			apperrors.AbortWithError(c, apperrors.Wrap(err, apperrors.CodeDatabaseError, "Failed to validate seller", http.StatusInternalServerError))
+			return
+		}
+	}
+
 	listingID := "listing_1"
 	listing := models.Listing{
 		AssetID:      req.AssetID,
@@ -370,6 +419,23 @@ func (h *AssetHandler) TransferAsset(c *gin.Context) {
 		return
 	}
 	c.Set("audit_asset_id", asset.ID)
+
+	// Enforce transfer restrictions before recording anything (#380) --
+	// whitelist/KYC/AML status on both parties, mirroring the on-chain
+	// checks in contracts/src/marketplace.rs. Previously this handler had
+	// no compliance check at all, so a restricted transfer could be
+	// recorded here even if the on-chain submission would later fail.
+	if h.transferValidator != nil {
+		if err := h.transferValidator.ValidateTransfer(req.FromAddress, req.ToAddress, req.AssetID, req.Amount); err != nil {
+			var violation *services.TransferRestrictionViolation
+			if errors.As(err, &violation) {
+				c.JSON(http.StatusForbidden, gin.H{"error": violation.Error()})
+				return
+			}
+			apperrors.AbortWithError(c, apperrors.Wrap(err, apperrors.CodeDatabaseError, "Failed to validate transfer", http.StatusInternalServerError))
+			return
+		}
+	}
 	if h.workflow != nil {
 		if requester, ok := c.Get("user_id"); ok {
 			if userID, ok := requester.(uint); ok {
@@ -394,6 +460,7 @@ func (h *AssetHandler) TransferAsset(c *gin.Context) {
 		Amount:      req.Amount,
 		TxHash:      txHash,
 		Status:      "pending",
+		Memo:        req.Memo,
 	}
 
 	if err := h.db.Create(&transaction).Error; err != nil {
@@ -436,6 +503,16 @@ func (h *AssetHandler) UpdateMetadata(c *gin.Context) {
 	if asset.IsImmutable {
 		apperrors.AbortWithError(c, apperrors.NewForbiddenError("Metadata is immutable after minting"))
 		return
+	}
+
+	// Snapshot current state before mutation so it can be reverted later.
+	changedBy, _ := c.Get("user_id")
+	var changedByID uint
+	if id, ok := changedBy.(uint); ok {
+		changedByID = id
+	}
+	if err := h.metadataService.RecordVersion(asset, changedByID, ""); err != nil {
+		log.Printf("Warning: failed to record metadata version for asset %d: %v", asset.ID, err)
 	}
 
 	asset.MetadataURI = req.MetadataURI
@@ -608,8 +685,9 @@ func (h *AssetHandler) ExecuteBatch(c *gin.Context) {
 		return
 	}
 
-	if len(req.Operations) > 50 {
-		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Batch cannot exceed 50 operations"))
+	maxBatchSize := config.GetMaxBatchSize()
+	if len(req.Operations) > maxBatchSize {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError(fmt.Sprintf("Batch size limit exceeded: maximum allowed is %d operations (received %d)", maxBatchSize, len(req.Operations))))
 		return
 	}
 
@@ -952,5 +1030,100 @@ func (h *AssetHandler) ConvertCurrency(c *gin.Context) {
 		"to":        to,
 		"amount":    amount,
 		"converted": converted,
+	})
+}
+
+// ListMetadataVersions returns all recorded metadata versions for an asset.
+// GET /assets/:id/metadata/versions
+func (h *AssetHandler) ListMetadataVersions(c *gin.Context) {
+	var uri validator.AssetIDUri
+	if err := c.ShouldBindUri(&uri); err != nil {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Invalid asset ID"))
+		return
+	}
+
+	var asset models.Asset
+	if err := h.db.First(&asset, uri.ID).Error; err != nil {
+		apperrors.AbortWithError(c, apperrors.NewNotFoundError("Asset not found"))
+		return
+	}
+
+	versions, err := h.metadataService.ListVersions(uri.ID)
+	if err != nil {
+		apperrors.AbortWithError(c, apperrors.NewDatabaseError("Failed to fetch metadata versions", err))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"asset_id": uri.ID, "versions": versions})
+}
+
+// GetMetadataVersion returns a specific historical metadata version for an asset.
+// GET /assets/:id/metadata/versions/:version
+func (h *AssetHandler) GetMetadataVersion(c *gin.Context) {
+	var uri validator.AssetIDUri
+	if err := c.ShouldBindUri(&uri); err != nil {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Invalid asset ID"))
+		return
+	}
+
+	versionStr := c.Param("version")
+	versionNum, err := strconv.Atoi(versionStr)
+	if err != nil || versionNum < 1 {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Invalid version number"))
+		return
+	}
+
+	version, err := h.metadataService.GetVersion(uri.ID, versionNum)
+	if err != nil {
+		apperrors.AbortWithError(c, apperrors.NewNotFoundError("Metadata version not found"))
+		return
+	}
+
+	c.JSON(http.StatusOK, version)
+}
+
+// RevertMetadataVersion reverts an asset's metadata to a prior version.
+// POST /assets/:id/metadata/versions/:version/revert
+func (h *AssetHandler) RevertMetadataVersion(c *gin.Context) {
+	var uri validator.AssetIDUri
+	if err := c.ShouldBindUri(&uri); err != nil {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Invalid asset ID"))
+		return
+	}
+
+	versionStr := c.Param("version")
+	versionNum, err := strconv.Atoi(versionStr)
+	if err != nil || versionNum < 1 {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Invalid version number"))
+		return
+	}
+
+	var asset models.Asset
+	if err := h.db.First(&asset, uri.ID).Error; err != nil {
+		apperrors.AbortWithError(c, apperrors.NewNotFoundError("Asset not found"))
+		return
+	}
+
+	if asset.IsImmutable {
+		apperrors.AbortWithError(c, apperrors.NewForbiddenError("Metadata is immutable and cannot be reverted"))
+		return
+	}
+
+	revertedBy, _ := c.Get("user_id")
+	var revertedByID uint
+	if id, ok := revertedBy.(uint); ok {
+		revertedByID = id
+	}
+
+	if err := h.metadataService.RevertToVersion(&asset, versionNum, revertedByID); err != nil {
+		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to revert metadata"))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":       "Metadata reverted successfully",
+		"asset_id":      asset.ID,
+		"metadata_uri":  asset.MetadataURI,
+		"metadata_hash": asset.MetadataHash,
 	})
 }

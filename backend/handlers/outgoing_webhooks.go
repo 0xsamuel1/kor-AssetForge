@@ -4,22 +4,26 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yourusername/kor-assetforge/apperrors"
 	"github.com/yourusername/kor-assetforge/models"
+	"github.com/yourusername/kor-assetforge/services"
 	"gorm.io/gorm"
 )
 
-// OutgoingWebhookHandler manages webhook subscriptions and delivery logs
 type OutgoingWebhookHandler struct {
-	db *gorm.DB
+	db            *gorm.DB
+	deliverySvc   *services.WebhookDeliveryService
 }
 
-// NewOutgoingWebhookHandler creates a new handler
 func NewOutgoingWebhookHandler(db *gorm.DB) *OutgoingWebhookHandler {
-	return &OutgoingWebhookHandler{db: db}
+	return &OutgoingWebhookHandler{
+		db:          db,
+		deliverySvc: services.NewWebhookDeliveryService(db),
+	}
 }
 
 type createSubscriptionRequest struct {
@@ -35,16 +39,6 @@ type updateSubscriptionRequest struct {
 	Active      *bool    `json:"active"`
 }
 
-// CreateSubscription registers a new outgoing webhook endpoint
-// @Summary Register a webhook subscription
-// @Description Register an HTTPS endpoint to receive outgoing webhook events
-// @Tags webhooks
-// @Accept json
-// @Produce json
-// @Param subscription body createSubscriptionRequest true "Subscription details"
-// @Success 201 {object} models.WebhookSubscription
-// @Failure 400 {object} apperrors.ErrorResponse
-// @Router /api/v1/webhooks/subscriptions [post]
 func (h *OutgoingWebhookHandler) CreateSubscription(c *gin.Context) {
 	var req createSubscriptionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -74,7 +68,6 @@ func (h *OutgoingWebhookHandler) CreateSubscription(c *gin.Context) {
 		return
 	}
 
-	// Return the secret only on creation
 	resp := gin.H{
 		"id":          sub.ID,
 		"url":         sub.URL,
@@ -87,12 +80,6 @@ func (h *OutgoingWebhookHandler) CreateSubscription(c *gin.Context) {
 	c.JSON(http.StatusCreated, resp)
 }
 
-// ListSubscriptions returns all webhook subscriptions for the authenticated user
-// @Summary List webhook subscriptions
-// @Tags webhooks
-// @Produce json
-// @Success 200 {array} models.WebhookSubscription
-// @Router /api/v1/webhooks/subscriptions [get]
 func (h *OutgoingWebhookHandler) ListSubscriptions(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	var subs []models.WebhookSubscription
@@ -100,15 +87,6 @@ func (h *OutgoingWebhookHandler) ListSubscriptions(c *gin.Context) {
 	c.JSON(http.StatusOK, subs)
 }
 
-// UpdateSubscription updates a webhook subscription
-// @Summary Update a webhook subscription
-// @Tags webhooks
-// @Accept json
-// @Produce json
-// @Param id path int true "Subscription ID"
-// @Param body body updateSubscriptionRequest true "Fields to update"
-// @Success 200 {object} models.WebhookSubscription
-// @Router /api/v1/webhooks/subscriptions/:id [put]
 func (h *OutgoingWebhookHandler) UpdateSubscription(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	var sub models.WebhookSubscription
@@ -140,12 +118,6 @@ func (h *OutgoingWebhookHandler) UpdateSubscription(c *gin.Context) {
 	c.JSON(http.StatusOK, sub)
 }
 
-// DeleteSubscription removes a webhook subscription
-// @Summary Delete a webhook subscription
-// @Tags webhooks
-// @Param id path int true "Subscription ID"
-// @Success 204
-// @Router /api/v1/webhooks/subscriptions/:id [delete]
 func (h *OutgoingWebhookHandler) DeleteSubscription(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	if err := h.db.Where("id = ? AND user_id = ?", c.Param("id"), userID).
@@ -156,12 +128,6 @@ func (h *OutgoingWebhookHandler) DeleteSubscription(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// GetDeliveryLogs returns delivery logs for a subscription
-// @Summary Get webhook delivery logs
-// @Tags webhooks
-// @Param id path int true "Subscription ID"
-// @Success 200 {array} models.WebhookDeliveryLog
-// @Router /api/v1/webhooks/subscriptions/:id/logs [get]
 func (h *OutgoingWebhookHandler) GetDeliveryLogs(c *gin.Context) {
 	userID := c.GetUint("user_id")
 	var sub models.WebhookSubscription
@@ -173,6 +139,67 @@ func (h *OutgoingWebhookHandler) GetDeliveryLogs(c *gin.Context) {
 	var logs []models.WebhookDeliveryLog
 	h.db.Where("subscription_id = ?", sub.ID).Order("created_at DESC").Limit(100).Find(&logs)
 	c.JSON(http.StatusOK, logs)
+}
+
+func (h *OutgoingWebhookHandler) RetryDelivery(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Invalid delivery log ID"))
+		return
+	}
+
+	if err := h.deliverySvc.RetrySpecific(uint(id)); err != nil {
+		apperrors.AbortWithError(c, apperrors.Wrap(err, apperrors.CodeBadRequest, err.Error(), http.StatusBadRequest))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Delivery retry scheduled"})
+}
+
+func (h *OutgoingWebhookHandler) RetryAllFailedDeliveries(c *gin.Context) {
+	count, err := h.deliverySvc.RetryAllFailed()
+	if err != nil {
+		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to retry deliveries"))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "retried": count})
+}
+
+func (h *OutgoingWebhookHandler) GetDeliveryDashboard(c *gin.Context) {
+	dashboard, err := h.deliverySvc.GetDeliveryDashboard()
+	if err != nil {
+		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to get delivery dashboard"))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": dashboard})
+}
+
+func (h *OutgoingWebhookHandler) GetDeliveryLog(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Invalid delivery log ID"))
+		return
+	}
+
+	var log models.WebhookDeliveryLog
+	if err := h.db.First(&log, id).Error; err != nil {
+		apperrors.AbortWithError(c, apperrors.NewNotFoundError("Delivery log not found"))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": log})
+}
+
+func (h *OutgoingWebhookHandler) ReplayDLQ(c *gin.Context) {
+	count, err := h.deliverySvc.ReplayFromDLQ()
+	if err != nil {
+		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to replay DLQ"))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "replayed": count})
 }
 
 func generateSecret() (string, error) {

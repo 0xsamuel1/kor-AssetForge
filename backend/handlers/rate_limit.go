@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -10,6 +9,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/ulule/limiter/v3"
 	sredis "github.com/ulule/limiter/v3/drivers/store/redis"
+	"go.uber.org/zap"
 )
 
 // RateLimiter holds the rate limiting logic
@@ -51,7 +51,7 @@ func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 
 		context, err := rl.limiter.Get(c, key)
 		if err != nil {
-			Logger.Error("Rate limiter error", fmt.Errorf("failed to get limit for key %s: %w", key, err))
+			Logger.Error("Rate limiter error", zap.String("key", key), zap.Error(err))
 			c.Next()
 			return
 		}
@@ -63,8 +63,8 @@ func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 
 		if context.Reached {
 			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error":   "Too Many Requests",
-				"message": "You have exceeded your rate limit. Please try again later.",
+				"error":       "Too Many Requests",
+				"message":     "You have exceeded your rate limit. Please try again later.",
 				"retry_after": time.Unix(context.Reset, 0).Sub(time.Now()).Seconds(),
 			})
 			c.Abort()

@@ -46,7 +46,16 @@ pub struct Trade {
     pub price: i128,
     pub quantity: i128,
     pub total_value: i128,
+    pub maker_fee: i128,
+    pub taker_fee: i128,
     pub executed_at: u64,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct FeeConfig {
+    pub maker_fee_bps: u32,
+    pub taker_fee_bps: u32,
 }
 
 #[derive(Clone)]
@@ -59,6 +68,7 @@ pub enum P2PDataKey {
     AssetOrders(u64),    // Vec<u64> of order IDs for an asset
     TradeHistory(u64),   // Vec<u64> of trade IDs for an asset
     Trade(u64),
+    FeeConfig,
 }
 
 // ============================================================================
@@ -76,6 +86,34 @@ impl P2PMarket {
             panic!("already initialized");
         }
         env.storage().instance().set(&P2PDataKey::Admin, &admin);
+    }
+
+    /// Admin: configure maker and taker fees (in basis points, e.g. 30 = 0.3%).
+    pub fn set_fee_config(env: Env, admin: Address, maker_fee_bps: u32, taker_fee_bps: u32) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&P2PDataKey::Admin)
+            .expect("not initialized");
+        if admin != stored_admin {
+            panic!("caller is not admin");
+        }
+        if maker_fee_bps > 1_000 || taker_fee_bps > 1_000 {
+            panic!("fee_bps must not exceed 1000 (10%)");
+        }
+        let config = FeeConfig { maker_fee_bps, taker_fee_bps };
+        env.storage().instance().set(&P2PDataKey::FeeConfig, &config);
+
+        env.events().publish(
+            (Symbol::new(&env, "fee_config_set"), admin),
+            (maker_fee_bps, taker_fee_bps),
+        );
+    }
+
+    /// Get the current fee configuration.
+    pub fn get_fee_config(env: Env) -> Option<FeeConfig> {
+        env.storage().instance().get(&P2PDataKey::FeeConfig)
     }
 
     /// Place a buy or sell order. Immediately attempts matching.
@@ -219,6 +257,11 @@ impl P2PMarket {
     // Internal: price-time priority matching
     // -----------------------------------------------------------------------
 
+    fn compute_fee(notional: i128, fee_bps: u32) -> i128 {
+        // Divide before multiply to avoid i128 overflow at large notional values.
+        notional / 10_000 * fee_bps as i128
+    }
+
     fn match_order(env: &Env, taker: &mut Order) -> Vec<u64> {
         let mut trade_ids: Vec<u64> = Vec::new(env);
         let asset_ids: Vec<u64> = env
@@ -301,6 +344,20 @@ impl P2PMarket {
                 .instance()
                 .set(&P2PDataKey::TradeNonce, &trade_id);
 
+            let total_value = trade_price.checked_mul(fill_qty).unwrap_or(0);
+            let (maker_fee, taker_fee) = if let Some(fee_cfg) = env
+                .storage()
+                .instance()
+                .get::<P2PDataKey, FeeConfig>(&P2PDataKey::FeeConfig)
+            {
+                (
+                    Self::compute_fee(total_value, fee_cfg.maker_fee_bps),
+                    Self::compute_fee(total_value, fee_cfg.taker_fee_bps),
+                )
+            } else {
+                (0, 0)
+            };
+
             let trade = Trade {
                 id: trade_id,
                 asset_id: taker.asset_id,
@@ -310,7 +367,9 @@ impl P2PMarket {
                 seller: seller.clone(),
                 price: trade_price,
                 quantity: fill_qty,
-                total_value: trade_price.checked_mul(fill_qty).unwrap_or(0),
+                total_value,
+                maker_fee,
+                taker_fee,
                 executed_at: env.ledger().timestamp(),
             };
 

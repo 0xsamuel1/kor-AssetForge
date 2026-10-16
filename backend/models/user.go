@@ -33,11 +33,28 @@ type User struct {
 	TOTPSecret           string         `gorm:"default:''" json:"-"`
 	TOTPEnabled          bool           `gorm:"default:false" json:"totp_enabled"`
 	TOTPVerified         bool           `gorm:"default:false" json:"-"`
-	BackupCodes          string         `gorm:"type:text" json:"-"`
-	LastLoginAt          *time.Time     `json:"last_login_at,omitempty"`
+	BackupCodes              string         `gorm:"type:text" json:"-"`
+	RecoveryCodesGeneratedAt *time.Time     `json:"-"`
+	LastLoginAt              *time.Time     `json:"last_login_at,omitempty"`
 	CreatedAt            time.Time      `json:"created_at"`
 	UpdatedAt            time.Time      `json:"updated_at"`
 	DeletedAt            gorm.DeletedAt `gorm:"index" json:"-"`
+}
+
+// RecoveryCode represents a single-use 2FA backup recovery code.
+// Codes are stored as salted hashes; the plaintext value is only ever
+// shown to the user once, at generation time.
+type RecoveryCode struct {
+	ID        uint       `gorm:"primaryKey" json:"id"`
+	UserID    uint       `gorm:"not null;index" json:"user_id"`
+	User      User       `gorm:"foreignKey:UserID" json:"-"`
+	CodeHash  string     `gorm:"not null" json:"-"`
+	UsedAt    *time.Time `json:"used_at,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+func (RecoveryCode) TableName() string {
+	return "user_recovery_codes"
 }
 
 // UserSession tracks active login sessions

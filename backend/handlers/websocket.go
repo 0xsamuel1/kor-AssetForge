@@ -134,7 +134,9 @@ func (h *Hub) run() {
 		case id := <-h.unregister:
 			h.mu.Lock()
 			if sub, ok := h.subscribers[id]; ok {
-				sub.conn.Close()
+				if sub.conn != nil {
+					sub.conn.Close()
+				}
 				close(sub.send)
 				delete(h.subscribers, id)
 			}
@@ -183,6 +185,9 @@ func (h *Hub) sendHeartbeat() {
 }
 
 func (h *Hub) writerLoop(sub *subscriber) {
+	if sub.conn == nil {
+		return
+	}
 	for msg := range sub.send {
 		if err := sub.conn.WriteMessage(msg); err != nil {
 			h.unregister <- sub.id

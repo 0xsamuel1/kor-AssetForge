@@ -48,16 +48,20 @@ type WebhookSubscription struct {
 
 // WebhookDeliveryLog records each outgoing webhook attempt
 type WebhookDeliveryLog struct {
-	ID             uint                  `gorm:"primaryKey" json:"id"`
-	SubscriptionID uint                  `gorm:"not null;index" json:"subscription_id"`
-	EventType      WebhookEventType      `gorm:"not null" json:"event_type"`
-	Payload        string                `gorm:"type:text;not null" json:"payload"`
-	Status         WebhookDeliveryStatus `gorm:"default:'pending'" json:"status"`
-	HTTPStatus     int                   `json:"http_status,omitempty"`
-	ResponseBody   string                `gorm:"type:text" json:"response_body,omitempty"`
-	AttemptCount   int                   `gorm:"default:0" json:"attempt_count"`
-	NextRetryAt    *time.Time            `json:"next_retry_at,omitempty"`
-	DeliveredAt    *time.Time            `json:"delivered_at,omitempty"`
-	CreatedAt      time.Time             `json:"created_at"`
-	UpdatedAt      time.Time             `json:"updated_at"`
+	ID              uint                  `gorm:"primaryKey" json:"id"`
+	SubscriptionID  uint                  `gorm:"not null;index" json:"subscription_id"`
+	EventType       WebhookEventType      `gorm:"not null" json:"event_type"`
+	Payload         string                `gorm:"type:text;not null" json:"payload"`
+	Status          WebhookDeliveryStatus `gorm:"default:'pending'" json:"status"`
+	HTTPStatus      int                   `json:"http_status,omitempty"`
+	ResponseBody    string                `gorm:"type:text" json:"response_body,omitempty"`
+	AttemptCount    int                   `gorm:"default:0" json:"attempt_count"`
+	MaxRetries      int                   `gorm:"default:5" json:"max_retries"`
+	NextRetryAt     *time.Time            `json:"next_retry_at,omitempty"`
+	DeliveredAt     *time.Time            `json:"delivered_at,omitempty"`
+	LastError       string                `gorm:"type:text" json:"last_error,omitempty"`
+	RetryHistory    string                `gorm:"type:jsonb" json:"retry_history,omitempty"`
+	DLQReason       string                `gorm:"type:text" json:"dlq_reason,omitempty"`
+	CreatedAt       time.Time             `json:"created_at"`
+	UpdatedAt       time.Time             `json:"updated_at"`
 }

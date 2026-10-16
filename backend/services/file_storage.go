@@ -25,7 +25,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"io"
 )
 
 // ---------------------------------------------------------------------------
@@ -33,7 +32,7 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	defaultMaxFileSizeBytes int64 = 20 * 1024 * 1024  // 20 MB
+	defaultMaxFileSizeBytes int64 = 20 * 1024 * 1024 // 20 MB
 	thumbnailMaxDimension         = 256
 )
 
@@ -56,24 +55,24 @@ var allowedMIMETypes = map[string]string{
 // FileMetadata holds information about an uploaded file persisted alongside
 // or instead of the S3 object metadata.
 type FileMetadata struct {
-	ID          string    `json:"id"`
-	OriginalName string   `json:"original_name"`
-	StoredKey   string    `json:"stored_key"`
-	MIMEType    string    `json:"mime_type"`
-	Extension   string    `json:"extension"`
-	SizeBytes   int64     `json:"size_bytes"`
-	SHA256      string    `json:"sha256"`
-	UploaderID  string    `json:"uploader_id"`
-	AssetID     string    `json:"asset_id,omitempty"`
-	Purpose     string    `json:"purpose,omitempty"` // "image", "document", "verification"
-	UploadedAt  time.Time `json:"uploaded_at"`
-	CDNUrl      string    `json:"cdn_url,omitempty"`
+	ID           string    `json:"id"`
+	OriginalName string    `json:"original_name"`
+	StoredKey    string    `json:"stored_key"`
+	MIMEType     string    `json:"mime_type"`
+	Extension    string    `json:"extension"`
+	SizeBytes    int64     `json:"size_bytes"`
+	SHA256       string    `json:"sha256"`
+	UploaderID   string    `json:"uploader_id"`
+	AssetID      string    `json:"asset_id,omitempty"`
+	Purpose      string    `json:"purpose,omitempty"` // "image", "document", "verification"
+	UploadedAt   time.Time `json:"uploaded_at"`
+	CDNUrl       string    `json:"cdn_url,omitempty"`
 }
 
 // UploadResult is returned from a successful upload.
 type UploadResult struct {
-	Metadata    FileMetadata `json:"metadata"`
-	PresignedURL string      `json:"presigned_url"` // short-lived direct-access URL
+	Metadata     FileMetadata `json:"metadata"`
+	PresignedURL string       `json:"presigned_url"` // short-lived direct-access URL
 }
 
 // ---------------------------------------------------------------------------
@@ -92,24 +91,22 @@ type FileStorageService struct {
 
 	encryptor *FileEncryptor
 	scanner   VirusScanner
-
 }
 
 // FileStorageConfig groups the configuration required to instantiate a
 // FileStorageService.  All values are read from environment variables by
 // NewFileStorageServiceFromEnv.
 type FileStorageConfig struct {
-	Endpoint        string // e.g. "https://s3.amazonaws.com" or a MinIO URL
-	Region          string
-	AccessKeyID     string
-	SecretAccessKey string
-	Bucket          string
-	CDNBase         string // optional CDN prefix, e.g. "https://cdn.example.com"
-	MaxFileSizeBytes int64 // 0 → defaultMaxFileSizeBytes
+	Endpoint         string // e.g. "https://s3.amazonaws.com" or a MinIO URL
+	Region           string
+	AccessKeyID      string
+	SecretAccessKey  string
+	Bucket           string
+	CDNBase          string // optional CDN prefix, e.g. "https://cdn.example.com"
+	MaxFileSizeBytes int64  // 0 → defaultMaxFileSizeBytes
 
 	Provider string
 }
-
 
 type VirusScanner interface {
 	Scan(ctx context.Context, file []byte) error
@@ -193,7 +190,6 @@ func decryptAESGCM(key, data []byte) ([]byte, error) {
 	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
-
 // NewFileStorageService constructs a FileStorageService from an explicit config.
 func NewFileStorageService(cfg FileStorageConfig, logger *zap.SugaredLogger) (*FileStorageService, error) {
 	maxSize := cfg.MaxFileSizeBytes
@@ -207,7 +203,6 @@ func NewFileStorageService(cfg FileStorageConfig, logger *zap.SugaredLogger) (*F
 	}
 
 	encryptor := NewFileEncryptor([]byte(encKey))
-
 
 	var scanner VirusScanner = nil
 
@@ -286,8 +281,6 @@ func (s *FileStorageService) Upload(
 	if int64(len(body)) > s.maxFileSize {
 		return nil, fmt.Errorf("file storage: file size exceeds limit of %d bytes", s.maxFileSize)
 	}
-	
-
 
 	// Detect MIME from content (ignores client-supplied Content-Type).
 	detectedMIME := http.DetectContentType(body[:min(512, len(body))])
@@ -317,13 +310,10 @@ func (s *FileStorageService) Upload(
 			return nil, fmt.Errorf("file storage: virus detected: %w", err)
 		}
 	}
-	
 
 	// Compute SHA-256 checksum for integrity and deduplication.
 	hash := sha256.Sum256(body)
 	hashHex := hex.EncodeToString(hash[:])
-
-
 
 	encryptedBody, err := encryptAESGCM(s.encryptor.key, body)
 	if err != nil {

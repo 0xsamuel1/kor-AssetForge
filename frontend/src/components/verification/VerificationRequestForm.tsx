@@ -6,8 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { ShieldCheck } from "lucide-react";
+import { ButtonSpinner } from "@/components/LoadingSpinner";
 
 interface VerificationRequestFormProps {
   wallet: StellarWallet;
@@ -97,7 +98,8 @@ export function VerificationRequestForm({
             </p>
           </div>
           <Button type="submit" disabled={isSubmitting} className="w-full">
-            {isSubmitting ? "Submitting..." : "Submit Verification Request"}
+            {isSubmitting && <ButtonSpinner />}
+            {isSubmitting ? "Submitting…" : "Submit Verification Request"}
           </Button>
         </form>
       </CardContent>

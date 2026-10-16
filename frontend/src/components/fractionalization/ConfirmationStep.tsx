@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { FractionalizationConfig } from "./FractionalizationWizard";
+import { ButtonSpinner } from "@/components/LoadingSpinner";
 
 interface ConfirmationStepProps {
   config: FractionalizationConfig;
@@ -105,9 +106,10 @@ export function ConfirmationStep({
           <button
             onClick={onSubmit}
             disabled={!agreedToTerms || isSubmitting}
-            className="flex-1 bg-primary text-primary-foreground py-2 rounded-lg font-medium hover:bg-primary/90 transition disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 inline-flex items-center justify-center gap-2 bg-primary text-primary-foreground py-2 rounded-lg font-medium hover:bg-primary/90 transition disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {isSubmitting ? "Processing..." : "Confirm Fractionalization"}
+            {isSubmitting && <ButtonSpinner />}
+            {isSubmitting ? "Processing…" : "Confirm Fractionalization"}
           </button>
         </div>
       </div>

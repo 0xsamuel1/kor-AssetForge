@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#171717" />
+    <title>Offline · kor-AssetForge</title>
+    <link rel="icon" href="/icon-192.png" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #171717;
+        --muted: #737373;
+        --border: #e5e5e5;
+        --primary: #171717;
+        --primary-fg: #fafafa;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0a0a0a;
+          --fg: #fafafa;
+          --muted: #a3a3a3;
+          --border: #262626;
+          --primary: #fafafa;
+          --primary-fg: #171717;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+      main {
+        max-width: 420px;
+        text-align: center;
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 32px 24px;
+      }
+      img { width: 64px; height: 64px; border-radius: 14px; }
+      h1 { font-size: 1.375rem; margin: 20px 0 8px; }
+      p { color: var(--muted); line-height: 1.5; margin: 0 0 12px; }
+      ul { text-align: left; color: var(--muted); line-height: 1.6; padding-left: 20px; margin: 0 0 24px; }
+      button {
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        border: 0;
+        border-radius: 8px;
+        padding: 10px 20px;
+        background: var(--primary);
+        color: var(--primary-fg);
+      }
+      button:focus-visible { outline: 3px solid #6366f1; outline-offset: 2px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="/icon-192.png" alt="" />
+      <h1>You're offline</h1>
+      <p role="status">
+        kor-AssetForge can't reach the network right now. Pages you've already
+        visited may still open from cache.
+      </p>
+      <ul>
+        <li>Check your Wi-Fi or mobile data connection.</li>
+        <li>Trading, wallet signing and balances need a live connection.</li>
+        <li>This page will reload automatically once you're back online.</li>
+      </ul>
+      <button type="button" onclick="location.reload()">Try again</button>
+    </main>
+    <script>
+      window.addEventListener("online", function () { location.reload(); });
+    </script>
+  </body>
+</html>

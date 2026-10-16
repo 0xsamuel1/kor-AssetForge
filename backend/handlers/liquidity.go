@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"time"
@@ -8,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/yourusername/kor-assetforge/apperrors"
 	"github.com/yourusername/kor-assetforge/models"
+	"github.com/yourusername/kor-assetforge/services"
 	"github.com/yourusername/kor-assetforge/utils"
 	"gorm.io/gorm"
 )
@@ -529,4 +532,71 @@ func (h *LiquidityHandler) GetSwapHistory(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, paginationRes)
+}
+
+// GetPoolAnalytics retrieves computed pool analytics/metrics
+// @Summary Get pool analytics
+// @Description Get computed analytics (APY, volume, TVL, impermanent loss) for a liquidity pool
+// @Tags liquidity
+// @Param id path int true "Pool ID"
+// @Success 200 {object} models.PoolMetrics
+// @Router /liquidity/pools/{id}/analytics [get]
+func (h *LiquidityHandler) GetPoolAnalytics(c *gin.Context) {
+	var uri struct {
+		ID uint `uri:"id" binding:"required,gt=0"`
+	}
+	if err := c.ShouldBindUri(&uri); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid pool ID"})
+		return
+	}
+
+	analyticsService := services.NewPoolAnalyticsService(h.db)
+	metrics, err := analyticsService.CalculatePoolMetrics(uri.ID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "Pool not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, metrics)
+}
+
+// ComparePools compares two liquidity pools
+// @Summary Compare pools
+// @Description Compare APY, TVL, and metrics of two liquidity pools
+// @Tags liquidity
+// @Param pool_a query int true "Pool A ID"
+// @Param pool_b query int true "Pool B ID"
+// @Success 200 {object} models.PoolComparison
+// @Router /liquidity/pools/compare [get]
+func (h *LiquidityHandler) ComparePools(c *gin.Context) {
+	poolAStr := c.Query("pool_a")
+	poolBStr := c.Query("pool_b")
+
+	if poolAStr == "" || poolBStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pool_a and pool_b query parameters are required"})
+		return
+	}
+
+	var poolAID, poolBID uint
+	if _, err := fmt.Sscanf(poolAStr, "%d", &poolAID); err != nil || poolAID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid pool_a ID"})
+		return
+	}
+	if _, err := fmt.Sscanf(poolBStr, "%d", &poolBID); err != nil || poolBID == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid pool_b ID"})
+		return
+	}
+
+	analyticsService := services.NewPoolAnalyticsService(h.db)
+	comparison, err := analyticsService.ComparePools(poolAID, poolBID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, comparison)
 }

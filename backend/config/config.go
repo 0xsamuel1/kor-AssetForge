@@ -117,6 +117,15 @@ func InitDB() (*gorm.DB, error) {
 		&models.ComplianceAuditLog{},
 		// Batch transaction model (#106)
 		&models.BatchTransaction{},
+		// Event indexer models (#180)
+		&models.IndexedEvent{},
+		&models.EventCheckpoint{},
+		// GDPR export models (#178)
+		&models.ExportJob{},
+		// Dynamic fee config models (#177)
+		&models.FeeConfig{},
+		&models.FeeAuditLog{},
+		// Approval workflow models
 		&models.ApprovalWorkflow{},
 		&models.ApprovalStep{},
 		&models.ApprovalRequest{},
@@ -132,6 +141,26 @@ func InitDB() (*gorm.DB, error) {
 		&models.WatchlistItem{},
 		// User activity model (#161)
 		&models.UserActivity{},
+		// Recommendation history powers personalized search ranking.
+		&models.UserInteraction{},
+		&models.UserPreference{},
+		&models.AssetRecommendation{},
+		// Email template models (#163)
+		&models.EmailTemplate{},
+		&models.EmailTemplateVersion{},
+		&models.EmailTemplateVariant{},
+		// Asset comparison history (#167)
+		&models.ComparisonHistory{},
+		// Performance metrics models (#169)
+		&models.AssetDividend{},
+		&models.PerformanceMetric{},
+		// Referral program models (#170)
+		&models.ReferralCode{},
+		&models.Referral{},
+		&models.ReferralReward{},
+		// Email delivery and tracking models (#372)
+		&models.EmailDelivery{},
+		&models.EmailSuppression{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to auto-migrate models: %w", err)
 	}

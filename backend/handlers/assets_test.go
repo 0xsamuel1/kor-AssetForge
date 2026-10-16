@@ -12,7 +12,7 @@ func TestTokenizeAssetRequestValidation(t *testing.T) {
 	}
 
 	req := validator.TokenizeAssetRequest{
-		IssuerAccount: "GD6WU5I6OIPRZ4A5I3G6JQ4RG5K27SQ26WPQ5W3MXV6QABBT3C7FIEIF",
+		IssuerAccount: "GABXYMNLGGTWAV7EQYHVWLQJ7MSAKBW3OX4J5B3UALQTVOUGX3HXBMEM",
 		Name:          "Real Asset",
 		Symbol:        "RWA1",
 		AssetType:     "real_estate",

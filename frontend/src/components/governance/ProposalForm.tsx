@@ -7,8 +7,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import { FilePlus } from "lucide-react";
+import { ButtonSpinner } from "@/components/LoadingSpinner";
 
 interface ProposalFormProps {
   wallet: StellarWallet;
@@ -103,7 +104,8 @@ export function ProposalForm({ wallet, onCreated }: ProposalFormProps) {
             />
           </div>
           <Button type="submit" disabled={isSubmitting} className="w-full">
-            {isSubmitting ? "Submitting..." : "Submit Proposal"}
+            {isSubmitting && <ButtonSpinner />}
+            {isSubmitting ? "Submitting…" : "Submit Proposal"}
           </Button>
         </form>
       </CardContent>

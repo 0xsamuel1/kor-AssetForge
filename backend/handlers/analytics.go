@@ -6,20 +6,24 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/yourusername/kor-assetforge/models"
 	"github.com/yourusername/kor-assetforge/services"
 	"gorm.io/gorm"
 )
 
 // AnalyticsHandler handles analytics and reporting endpoints.
 type AnalyticsHandler struct {
-	DB               *gorm.DB
-	ValuationTracker *services.ValuationTrackerService
+	DB                *gorm.DB
+	ValuationTracker  *services.ValuationTrackerService
+	MetricsCalculator *services.MetricsCalculatorService
 }
 
 // NewAnalyticsHandler creates an AnalyticsHandler.
 func NewAnalyticsHandler(db *gorm.DB, vt *services.ValuationTrackerService) *AnalyticsHandler {
-	return &AnalyticsHandler{DB: db, ValuationTracker: vt}
+	return &AnalyticsHandler{
+		DB:                db,
+		ValuationTracker:  vt,
+		MetricsCalculator: services.NewMetricsCalculatorService(db),
+	}
 }
 
 // PlatformSummary holds aggregated platform metrics.
@@ -72,7 +76,7 @@ func (h *AnalyticsHandler) GetUserGrowth(c *gin.Context) {
 // RecordValuation stores a new valuation snapshot for an asset.
 // POST /api/v1/assets/:id/valuations
 func (h *AnalyticsHandler) RecordValuation(c *gin.Context) {
-	assetID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	assetID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid asset id"})
 		return
@@ -101,7 +105,7 @@ func (h *AnalyticsHandler) RecordValuation(c *gin.Context) {
 // GetValuationHistory returns paginated valuation snapshots for an asset.
 // GET /api/v1/assets/:id/valuations?page=1&limit=50
 func (h *AnalyticsHandler) GetValuationHistory(c *gin.Context) {
-	assetID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	assetID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid asset id"})
 		return
@@ -138,7 +142,7 @@ func (h *AnalyticsHandler) GetValuationHistory(c *gin.Context) {
 // GetValuationTrend returns aggregated valuation trend data for charting.
 // GET /api/v1/assets/:id/valuations/trend?from=2024-01-01&to=2024-12-31&granularity=daily
 func (h *AnalyticsHandler) GetValuationTrend(c *gin.Context) {
-	assetID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	assetID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid asset id"})
 		return
@@ -184,7 +188,7 @@ func (h *AnalyticsHandler) GetValuationTrend(c *gin.Context) {
 // GetLatestValuation returns the most recent valuation for an asset.
 // GET /api/v1/assets/:id/valuations/latest
 func (h *AnalyticsHandler) GetLatestValuation(c *gin.Context) {
-	assetID, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	assetID, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid asset id"})
 		return
@@ -199,3 +203,116 @@ func (h *AnalyticsHandler) GetLatestValuation(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": v})
 }
 
+// parsePeriod resolves optional from/to query params (YYYY-MM-DD), defaulting to
+// a trailing 12-month window.
+func parsePeriod(c *gin.Context) (time.Time, time.Time, error) {
+	to := time.Now().UTC()
+	from := to.AddDate(-1, 0, 0)
+	if s := c.Query("from"); s != "" {
+		parsed, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			return from, to, err
+		}
+		from = parsed
+	}
+	if s := c.Query("to"); s != "" {
+		parsed, err := time.Parse("2006-01-02", s)
+		if err != nil {
+			return from, to, err
+		}
+		to = parsed.Add(24*time.Hour - time.Second)
+	}
+	return from, to, nil
+}
+
+// GetPerformanceMetrics computes ROI, appreciation rate, dividend yield and
+// related indicators for an asset over an optional date range (#169).
+// GET /api/v1/assets/:id/performance?from=YYYY-MM-DD&to=YYYY-MM-DD
+func (h *AnalyticsHandler) GetPerformanceMetrics(c *gin.Context) {
+	assetID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid asset id"})
+		return
+	}
+	from, to, err := parsePeriod(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date (use YYYY-MM-DD)"})
+		return
+	}
+	metric, err := h.MetricsCalculator.Calculate(uint(assetID), from, to)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": metric})
+}
+
+// GetPerformanceHistory returns stored performance snapshots for an asset (#169).
+// GET /api/v1/assets/:id/performance/history?limit=90
+func (h *AnalyticsHandler) GetPerformanceHistory(c *gin.Context) {
+	assetID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid asset id"})
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "90"))
+	metrics, err := h.MetricsCalculator.History(uint(assetID), limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch performance history"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "data": metrics})
+}
+
+// RecalculatePerformance computes and stores a fresh performance snapshot for an
+// asset (admin-triggered) (#169).
+// POST /api/v1/assets/:id/performance/recalculate
+func (h *AnalyticsHandler) RecalculatePerformance(c *gin.Context) {
+	assetID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid asset id"})
+		return
+	}
+	from, to, err := parsePeriod(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid date (use YYYY-MM-DD)"})
+		return
+	}
+	metric, err := h.MetricsCalculator.CalculateAndStore(uint(assetID), from, to)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"success": true, "data": metric})
+}
+
+// RecordDividend records a dividend distribution for an asset, used by the
+// dividend-yield calculation (#169).
+// POST /api/v1/assets/:id/dividends
+func (h *AnalyticsHandler) RecordDividend(c *gin.Context) {
+	assetID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid asset id"})
+		return
+	}
+	var req struct {
+		AmountUSD float64    `json:"amount_usd" binding:"required,gt=0"`
+		Currency  string     `json:"currency"`
+		Note      string     `json:"note"`
+		PaidAt    *time.Time `json:"paid_at"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	paidAt := time.Time{}
+	if req.PaidAt != nil {
+		paidAt = *req.PaidAt
+	}
+	dividend, err := h.MetricsCalculator.RecordDividend(uint(assetID), req.AmountUSD, req.Currency, req.Note, paidAt)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"success": true, "data": dividend})
+}

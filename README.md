@@ -46,7 +46,7 @@ cd kor-AssetForge
 chmod +x scripts/setup.sh
 ./scripts/setup.sh
 
-# Start local development environment
+# Start local development environmentt
 docker-compose up -d
 
 # Build and test smart contracts
