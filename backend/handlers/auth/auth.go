@@ -21,6 +21,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/yourusername/kor-assetforge/apperrors"
+	"github.com/yourusername/kor-assetforge/config"
 	"github.com/yourusername/kor-assetforge/models"
 	"github.com/yourusername/kor-assetforge/services"
 )
@@ -31,20 +32,29 @@ type AuthConfig struct {
 	JWTExpirationHours int
 	RefreshTokenHours  int
 	EmailTokenHours    int
-	PasswordResetHours int
+	PasswordResetMinutes int
 	BcryptCost         int
 }
 
 // AuthHandler handles authentication operations
 type AuthHandler struct {
-	db           *gorm.DB
-	config       *AuthConfig
-	emailService services.EmailService
+	db               *gorm.DB
+	config           *AuthConfig
+	emailService     services.EmailService
+	authService      *services.AuthService
+	emailRateLimiter *services.EmailRateLimiter
 }
 
 // NewAuthHandler creates a new auth handler
 func NewAuthHandler(db *gorm.DB, config *AuthConfig, emailService services.EmailService) *AuthHandler {
-	return &AuthHandler{db: db, config: config, emailService: emailService}
+	emailRateCfg := config.LoadEmailRateLimitConfig()
+	return &AuthHandler{
+		db:               db,
+		config:           config,
+		emailService:     emailService,
+		authService:      services.NewAuthService(db, emailService),
+		emailRateLimiter: services.NewEmailRateLimiter(emailRateCfg.MaxPerWindow, emailRateCfg.Window),
+	}
 }
 
 // RegisterRequest represents user registration request
@@ -177,6 +187,12 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
+	// Rate limit verification emails per account, not per IP (#331).
+	if !h.emailRateLimiter.Allow(req.Email) {
+		apperrors.AbortWithError(c, apperrors.NewTooManyRequestsError("Verification email rate limit exceeded. Please try again later."))
+		return
+	}
+
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), h.config.BcryptCost)
 	if err != nil {
 		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to hash password"))
@@ -231,6 +247,17 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
+	// Reject locked-out accounts before any credential validation (#330).
+	locked, err := h.authService.IsAccountLocked(req.Email)
+	if err != nil {
+		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to check account status"))
+		return
+	}
+	if locked {
+		apperrors.AbortWithError(c, apperrors.NewForbiddenError("Account temporarily locked due to multiple failed login attempts. Please try again later."))
+		return
+	}
+
 	var user models.User
 	if err := h.db.Where("email = ?", req.Email).First(&user).Error; err != nil {
 		apperrors.AbortWithError(c, apperrors.NewUnauthorizedError("Invalid email or password"))
@@ -238,7 +265,22 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		locked, lockErr := h.authService.RecordFailedAttempt(req.Email, c.ClientIP(), c.GetHeader("User-Agent"))
+		if lockErr != nil {
+			apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to record login attempt"))
+			return
+		}
+		if locked {
+			apperrors.AbortWithError(c, apperrors.NewForbiddenError("Account temporarily locked due to multiple failed login attempts. Please try again later."))
+			return
+		}
 		apperrors.AbortWithError(c, apperrors.NewUnauthorizedError("Invalid email or password"))
+		return
+	}
+
+	// Successful login clears any prior failed-attempt state (#330).
+	if err := h.authService.RecordSuccessfulAttempt(req.Email); err != nil {
+		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to update login status"))
 		return
 	}
 
@@ -404,7 +446,7 @@ func (h *AuthHandler) ForgotPassword(c *gin.Context) {
 	}
 
 	user.PasswordResetToken = generateSecureToken()
-	user.PasswordResetExpires = time.Now().Add(time.Hour * time.Duration(h.config.PasswordResetHours))
+	user.PasswordResetExpires = time.Now().Add(time.Minute * time.Duration(h.config.PasswordResetMinutes))
 	if err := h.db.Save(&user).Error; err != nil {
 		apperrors.AbortWithError(c, apperrors.NewInternalError("Failed to generate reset token"))
 		return
