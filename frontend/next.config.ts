@@ -10,6 +10,24 @@ const nextConfig: NextConfig = {
       "next-intl/config": "./src/i18n/i18n.ts",
     },
   },
+  // The service worker must never be cached by the browser or a CDN, or users
+  // would keep running an old worker after a deploy.
+  async headers() {
+    return [
+      {
+        source: "/sw.js",
+        headers: [
+          { key: "Content-Type", value: "application/javascript; charset=utf-8" },
+          { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
+          { key: "Service-Worker-Allowed", value: "/" },
+        ],
+      },
+      {
+        source: "/offline.html",
+        headers: [{ key: "Cache-Control", value: "no-cache" }],
+      },
+    ];
+  },
   webpack(config) {
     config.resolve ??= {};
     config.resolve.alias ??= {};
