@@ -8,7 +8,6 @@ import {
   Loader2,
   LogOut,
   RefreshCw,
-  TriangleAlert,
   Wallet,
 } from "lucide-react";
 
@@ -21,13 +20,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { WalletErrorAlert } from "@/components/WalletErrorAlert";
 import { toast } from "@/lib/toast";
 import { cn, truncateAddress } from "@/lib/utils";
+import { getWalletErrorDetails, toWalletError } from "@/lib/wallet/errors";
 import {
   connectWallet,
   disconnectWallet,
+  getWalletProvider,
   WALLET_PROVIDERS,
-  WalletError,
   detectWalletProviders,
   type ConnectedWallet,
   type WalletProvider,
@@ -147,7 +148,10 @@ export function WalletModal({
     boolean
   > | null>(null);
   const [connectingId, setConnectingId] = useState<WalletProviderId | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{
+    providerId: WalletProviderId;
+    error: unknown;
+  } | null>(null);
   const [hasCopied, setHasCopied] = useState(false);
 
   /** Manual re-scan from the footer button. */
@@ -186,12 +190,10 @@ export function WalletModal({
         description: truncateAddress(connected.publicKey),
       });
     } catch (err) {
-      const message =
-        err instanceof WalletError
-          ? err.message
-          : "Something went wrong while connecting. Please try again.";
-      setError(message);
-      toast.error("Wallet connection failed", { description: message });
+      const walletError = toWalletError(providerId, err, "connect");
+      const details = getWalletErrorDetails(walletError);
+      setError({ providerId, error: walletError });
+      toast.error(details.title, { description: details.message });
     } finally {
       setConnectingId(null);
     }
@@ -274,13 +276,14 @@ export function WalletModal({
             </DialogHeader>
 
             {error && (
-              <div
-                role="alert"
-                className="flex items-start gap-2 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
-              >
-                <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-                <p className="flex-1">{error}</p>
-              </div>
+              <WalletErrorAlert
+                error={error.error}
+                providerId={error.providerId}
+                installUrl={getWalletProvider(error.providerId)?.installUrl}
+                onRetry={() => handleConnect(error.providerId)}
+                onDismiss={() => setError(null)}
+                isRetrying={connectingId === error.providerId}
+              />
             )}
 
             <div className="flex flex-col gap-2">

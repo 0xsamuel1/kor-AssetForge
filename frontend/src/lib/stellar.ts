@@ -1,5 +1,7 @@
 import { Horizon } from "@stellar/stellar-sdk";
 import * as freighterApi from "@stellar/freighter-api";
+import { toWalletError, WalletError } from "@/lib/wallet/errors";
+import { signWithFreighter } from "@/lib/wallet/freighter";
 
 export interface StellarWallet {
   publicKey: string;
@@ -52,7 +54,15 @@ class StellarService {
     try {
       const response = await freighterApi.getAddress();
       if (response.error) {
-        throw new Error(response.error.message);
+        throw toWalletError("freighter", response.error, "connect");
+      }
+      if (!response.address) {
+        // Freighter returns an empty address while locked or not yet allowed.
+        throw new WalletError(
+          "locked",
+          "freighter",
+          "Freighter is locked or hasn't shared an account with this site.",
+        );
       }
       return {
         publicKey: response.address,
@@ -60,7 +70,7 @@ class StellarService {
       };
     } catch (error) {
       console.error("Failed to connect wallet:", error);
-      throw new Error("Failed to connect to Freighter wallet");
+      throw toWalletError("freighter", error, "connect");
     }
   }
 
@@ -80,17 +90,19 @@ class StellarService {
 
   async signTransaction(xdr: string): Promise<string> {
     try {
-      const response = await freighterApi.signTransaction(xdr, {
-        networkPassphrase: "Test SDF Network ; September 2015",
-        address: (await freighterApi.getAddress()).address,
-      });
-      if (response.error) {
-        throw new Error(response.error.message);
+      const { address, error } = await freighterApi.getAddress();
+      if (error) throw toWalletError("freighter", error, "sign");
+      if (!address) {
+        throw new WalletError(
+          "locked",
+          "freighter",
+          "Unlock Freighter to sign this transaction.",
+        );
       }
-      return response.signedTxXdr;
+      return await signWithFreighter(xdr, address);
     } catch (error) {
       console.error("Failed to sign transaction:", error);
-      throw new Error("Failed to sign transaction");
+      throw toWalletError("freighter", error, "sign");
     }
   }
 

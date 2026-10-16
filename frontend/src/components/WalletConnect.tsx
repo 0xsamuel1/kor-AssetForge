@@ -5,9 +5,13 @@ import { Wallet } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { WalletErrorAlert } from '@/components/WalletErrorAlert'
 import { WalletModal } from '@/components/WalletModal'
 import { StellarWallet } from '@/lib/stellar'
+import { toast } from '@/lib/toast'
 import { truncateAddress } from '@/lib/utils'
+import { getWalletErrorDetails, type WalletError } from '@/lib/wallet/errors'
+import { diagnoseFreighter } from '@/lib/wallet/freighter'
 import {
   getStoredProviderId,
   getWalletProvider,
@@ -49,9 +53,13 @@ export function WalletConnect({
   const [isRestoring, setIsRestoring] = useState(
     () => autoReconnect && !wallet?.connected,
   )
+  // Why the previous session couldn't be restored (wallet locked, wrong
+  // network), so the user knows what to fix before reconnecting.
+  const [restoreError, setRestoreError] = useState<WalletError | null>(null)
 
   const handleConnected = useCallback(
     (connected: ConnectedWallet) => {
+      setRestoreError(null)
       setProviderId(connected.providerId)
       onWalletConnected(connected)
     },
@@ -67,13 +75,28 @@ export function WalletConnect({
     let cancelled = false
 
     restoreWalletConnection()
-      .then((restored) => {
+      .then(async (restored) => {
         if (cancelled) return
         if (restored) {
           handleConnected(restored)
-        } else {
-          setProviderId(getStoredProviderId())
+          return
         }
+
+        const storedId = getStoredProviderId()
+        setProviderId(storedId)
+        if (storedId !== 'freighter') return
+
+        const problem = await diagnoseFreighter()
+        if (cancelled || !problem) return
+        setRestoreError(problem)
+        if (variant === 'button') {
+          // The compact trigger has no room for the full alert.
+          const details = getWalletErrorDetails(problem)
+          toast.warning(details.title, { description: details.recovery[0] })
+        }
+      })
+      .catch(() => {
+        // Restoring is best-effort; the user can still connect manually.
       })
       .finally(() => {
         if (!cancelled) setIsRestoring(false)
@@ -178,7 +201,17 @@ export function WalletConnect({
             Connect a Stellar wallet — Freighter, Albedo, LOBSTR, xBull or Rabet
           </CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          {restoreError && (
+            <WalletErrorAlert
+              error={restoreError}
+              onRetry={() => {
+                setRestoreError(null)
+                setIsModalOpen(true)
+              }}
+              onDismiss={() => setRestoreError(null)}
+            />
+          )}
           <Button
             onClick={() => setIsModalOpen(true)}
             className="w-full"
