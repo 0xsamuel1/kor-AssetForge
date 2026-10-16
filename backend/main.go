@@ -18,6 +18,7 @@ import (
 	"github.com/yourusername/kor-assetforge/handlers"
 	"github.com/yourusername/kor-assetforge/handlers/auth"
 	handlersv2 "github.com/yourusername/kor-assetforge/handlers/v2"
+	"github.com/yourusername/kor-assetforge/handlers/webhooks"
 	"github.com/yourusername/kor-assetforge/middleware"
 	"github.com/yourusername/kor-assetforge/models"
 	"github.com/yourusername/kor-assetforge/monitoring"
@@ -297,10 +298,22 @@ func main() {
 			middleware.HTTPCache(cacheManager, 1*time.Minute, "kor:oracle", nil),
 			assetHandler.GetAssetOraclePrice)
 
-		// Batch transaction routes (#106)
+		// Batch transaction routes (#106, #367, #370)
+		batchHandler := handlers.NewBatchHandler(db, nil)
 		v1.POST("/batch/execute",
+			middleware.BatchValidator(),
 			middleware.InvalidateOnWrite(cacheManager, "kor:asset:*"),
 			assetHandler.ExecuteBatch)
+		v1.POST("/batch/submit",
+			middleware.BatchValidator(),
+			authMiddleware.JWTAuth(),
+			batchHandler.SubmitBatch)
+		v1.POST("/batch/retry/:id",
+			authMiddleware.JWTAuth(),
+			batchHandler.RetryBatch)
+		v1.POST("/batch/:id/retry",
+			authMiddleware.JWTAuth(),
+			batchHandler.RetryBatch)
 		v1.GET("/batch/:id",
 			middleware.HTTPCache(cacheManager, 1*time.Minute, "kor:batch", nil),
 			assetHandler.GetBatchStatus)
@@ -409,10 +422,19 @@ func main() {
 		v1.GET("/liquidity/positions", liquidityHandler.GetLPPositions)
 		v1.GET("/liquidity/swaps", liquidityHandler.GetSwapHistory)
 
-		// Incoming webhook routes
+		// Incoming webhook routes (#372)
 		webhookHandler := handlers.NewWebhookHandler(db)
 		router.POST("/webhooks/stellar-events", webhookHandler.HandleStellarEvent)
 		router.POST("/webhooks/kyc", kycHandler.HandleKYCWebhook)
+
+		emailAnalytics := services.NewEmailAnalyticsService(db)
+		emailWebhookHandler := webhooks.NewEmailWebhookHandler(emailAnalytics, emailService.GetHealthChecker())
+		router.POST("/webhooks/email/sendgrid", emailWebhookHandler.HandleSendGrid)
+		router.POST("/webhooks/email/ses", emailWebhookHandler.HandleSES)
+		router.POST("/webhooks/email", emailWebhookHandler.HandleGeneric)
+		router.POST("/webhooks/email/generic", emailWebhookHandler.HandleGeneric)
+		v1.GET("/email/dashboard", emailWebhookHandler.GetDashboard)
+		v1.GET("/email/analytics", emailWebhookHandler.GetAnalytics)
 
 		// Outgoing webhook subscription routes (#126)
 		outgoingWebhookHandler := handlers.NewOutgoingWebhookHandler(db)

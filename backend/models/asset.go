@@ -89,6 +89,11 @@ type BatchTransaction struct {
 	CompletedCount  int            `gorm:"default:0" json:"completed_count"`
 	FailedCount     int            `gorm:"default:0" json:"failed_count"`
 	TotalOperations int            `gorm:"not null" json:"total_operations"`
+	RetryCount      int            `gorm:"default:0" json:"retry_count"`
+	MaxRetries      int            `gorm:"default:3" json:"max_retries"`
+	NextRetryAt     *time.Time     `json:"next_retry_at,omitempty"`
+	LastRetryAt     *time.Time     `json:"last_retry_at,omitempty"`
+	IsRetryable     bool           `gorm:"default:true" json:"is_retryable"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
 	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
