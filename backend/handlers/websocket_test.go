@@ -193,6 +193,48 @@ func TestHub_MultipleSubscribers(t *testing.T) {
 	}
 }
 
+func TestHub_BroadcastSeqIsMonotonic(t *testing.T) {
+	hub := &Hub{
+		subscribers: make(map[string]*subscriber),
+		register:    make(chan *subscriber, 8),
+		unregister:  make(chan string, 8),
+		broadcast:   make(chan *hubMsg, 64),
+		startedAt:   time.Now(),
+	}
+	go hub.run()
+
+	sub := &subscriber{
+		id:     "seq-listener",
+		topics: map[Topic]bool{TopicAll: true},
+		send:   make(chan []byte, 16),
+	}
+	hub.register <- sub
+	time.Sleep(10 * time.Millisecond)
+
+	const n = 5
+	for i := 0; i < n; i++ {
+		hub.Broadcast(TopicAssets, WSEvent{Type: EventAssetUpdated, Timestamp: time.Now()})
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	if len(sub.send) != n {
+		t.Fatalf("expected %d messages, got %d", n, len(sub.send))
+	}
+
+	var lastSeq int64
+	for i := 0; i < n; i++ {
+		raw := <-sub.send
+		var got WSEvent
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+		if got.Seq <= lastSeq {
+			t.Errorf("expected strictly increasing Seq, got %d after %d", got.Seq, lastSeq)
+		}
+		lastSeq = got.Seq
+	}
+}
+
 func TestWSEvent_JSONShape(t *testing.T) {
 	evt := WSEvent{
 		Type:      EventTransactionNew,

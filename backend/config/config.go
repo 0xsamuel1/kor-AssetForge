@@ -35,6 +35,14 @@ func LoadDBPoolConfig() DBPoolConfig {
 	}
 }
 
+// CacheLockWaitTimeout returns how long a request should wait on another
+// instance's distributed cache-regeneration lock (see utils.CacheManager.
+// GetOrLoadDistributed) before falling back to a stale value or a miss.
+// Configurable via the CACHE_LOCK_WAIT_TIMEOUT environment variable.
+func CacheLockWaitTimeout() time.Duration {
+	return envDuration("CACHE_LOCK_WAIT_TIMEOUT", 2*time.Second)
+}
+
 func (c DBPoolConfig) apply(db *sql.DB) {
 	db.SetMaxOpenConns(c.MaxOpen)
 	db.SetMaxIdleConns(c.MaxIdle)

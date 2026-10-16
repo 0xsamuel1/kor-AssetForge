@@ -33,7 +33,10 @@ func (r *responseRecorder) WriteHeader(status int) {
 //   - ttl: how long each cached response lives
 //   - keyPrefix: prepended to the request path to form the cache key
 //   - skip: optional predicate; return true to bypass caching for a request
-func HTTPCache(cm *utils.CacheManager, ttl time.Duration, keyPrefix string, skip func(*gin.Context) bool) gin.HandlerFunc {
+//   - tags: optional cache tags (see docs/CACHING_STRATEGY.md) allowing this
+//     entry to be invalidated together with other related entries via
+//     InvalidateOnWriteTags, even when they don't share a key prefix.
+func HTTPCache(cm *utils.CacheManager, ttl time.Duration, keyPrefix string, skip func(*gin.Context) bool, tags ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Only cache idempotent GET requests.
 		if c.Request.Method != http.MethodGet {
@@ -64,7 +67,11 @@ func HTTPCache(cm *utils.CacheManager, ttl time.Duration, keyPrefix string, skip
 
 		// Only cache successful JSON responses.
 		if rec.status == http.StatusOK && isJSON(c) && rec.body.Len() > 0 {
-			_ = cm.Set(c.Request.Context(), cacheKey, rec.body.Bytes(), ttl)
+			if len(tags) > 0 {
+				_ = cm.SetWithTags(c.Request.Context(), cacheKey, rec.body.Bytes(), ttl, tags...)
+			} else {
+				_ = cm.Set(c.Request.Context(), cacheKey, rec.body.Bytes(), ttl)
+			}
 		}
 	}
 }
@@ -82,6 +89,24 @@ func InvalidateOnWrite(cm *utils.CacheManager, patterns ...string) gin.HandlerFu
 		}
 		for _, p := range patterns {
 			_ = cm.Invalidate(c.Request.Context(), p)
+		}
+	}
+}
+
+// InvalidateOnWriteTags returns a Gin middleware that invalidates every cache
+// entry associated with the given tags (see docs/CACHING_STRATEGY.md)
+// whenever a mutating request succeeds. Use this alongside or instead of
+// InvalidateOnWrite when related cached entries don't share a key prefix
+// (e.g. an asset update that should also invalidate search results).
+func InvalidateOnWriteTags(cm *utils.CacheManager, tags ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+
+		if c.Writer.Status() < 200 || c.Writer.Status() >= 300 {
+			return
+		}
+		for _, tag := range tags {
+			_ = cm.InvalidateTag(c.Request.Context(), tag)
 		}
 	}
 }

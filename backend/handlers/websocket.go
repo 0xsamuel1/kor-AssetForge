@@ -40,10 +40,15 @@ const (
 )
 
 // WSEvent is the envelope sent to every client.
+//
+// Seq is a monotonically increasing, per-hub sequence number assigned at
+// broadcast time. Clients use it to detect gaps (dropped/out-of-order
+// delivery) and reorder buffered messages; see frontend/src/lib/websocket.ts.
 type WSEvent struct {
 	Type      EventType   `json:"type"`
 	Payload   interface{} `json:"payload"`
 	Timestamp time.Time   `json:"timestamp"`
+	Seq       int64       `json:"seq"`
 }
 
 // WSStats exposes live metrics about the hub.
@@ -99,6 +104,7 @@ type Hub struct {
 	broadcast  chan *hubMsg
 
 	totalBroadcasts atomic.Int64
+	seq             atomic.Int64
 	startedAt       time.Time
 }
 
@@ -187,7 +193,7 @@ func (h *Hub) fanOut(msg *hubMsg) {
 }
 
 func (h *Hub) sendHeartbeat() {
-	evt := WSEvent{Type: EventPing, Payload: nil, Timestamp: time.Now()}
+	evt := WSEvent{Type: EventPing, Payload: nil, Timestamp: time.Now(), Seq: h.seq.Add(1)}
 	data, _ := json.Marshal(evt)
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -218,7 +224,9 @@ func (h *Hub) connectedCount() int {
 }
 
 // Broadcast dispatches an event to all subscribers interested in topic.
+// It assigns the next monotonic sequence number before sending (see WSEvent.Seq).
 func (h *Hub) Broadcast(topic Topic, event WSEvent) {
+	event.Seq = h.seq.Add(1)
 	data, err := json.Marshal(event)
 	if err != nil {
 		return
