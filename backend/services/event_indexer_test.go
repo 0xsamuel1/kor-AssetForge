@@ -18,8 +18,12 @@ import (
 
 func TestEventIndexer_SyncAndProcess(t *testing.T) {
 	// Set up database
-	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared"), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open("file::memory:?cache=shared&_busy_timeout=5000"), &gorm.Config{})
 	require.NoError(t, err)
+
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
 
 	err = db.AutoMigrate(&models.IndexedEvent{}, &models.EventCheckpoint{})
 	require.NoError(t, err)
@@ -105,9 +109,13 @@ func TestEventIndexer_SyncAndProcess(t *testing.T) {
 
 	// Check database records
 	var ev models.IndexedEvent
-	err = db.Where("event_id = ?", mockEvents[0].ID).First(&ev).Error
-	require.NoError(t, err)
-	assert.Equal(t, models.EventStatusProcessed, ev.Status)
+	assert.Eventually(t, func() bool {
+		if err := db.Where("event_id = ?", mockEvents[0].ID).First(&ev).Error; err != nil {
+			return false
+		}
+		return ev.Status == models.EventStatusProcessed
+	}, 2*time.Second, 20*time.Millisecond)
+
 	assert.Equal(t, uint32(100), ev.Ledger)
 	assert.Equal(t, "txhash123", ev.TxHash)
 
