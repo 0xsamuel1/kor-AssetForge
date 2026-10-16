@@ -356,14 +356,22 @@ func main() {
 		}
 
 		// KYC / AML routes (#55)
-		kycHandler := handlers.NewKYCHandler(db, nil, emailService) // nil = mock provider
+		kycHandler := handlers.NewKYCHandler(db, nil, emailService, nil) // nil, nil = mock KYC provider, AML provider from env
 		v1.POST("/kyc/submit", kycHandler.SubmitKYC)
 		v1.GET("/kyc/status", kycHandler.GetKYCStatus)
 		v1.POST("/kyc/documents", kycHandler.UploadDocument)
 		v1.POST("/kyc/aml/screen", kycHandler.ScreenAML)
+		v1.POST("/kyc/aml/review/:id", kycHandler.ResolveAMLReview)
 		v1.POST("/kyc/accredited", kycHandler.VerifyAccreditedInvestor)
 		v1.GET("/kyc/audit", kycHandler.GetAuditLog)
 		v1.GET("/compliance/report", kycHandler.ComplianceReport)
+
+		// Beneficial ownership (UBO) routes (#379)
+		complianceHandler := handlers.NewComplianceHandler(db)
+		v1.POST("/compliance/ubo", complianceHandler.DeclareBeneficialOwner)
+		v1.GET("/compliance/ubo", complianceHandler.ListBeneficialOwners)
+		v1.POST("/compliance/ubo/:id/resolve", complianceHandler.ResolveUBOReview)
+		v1.POST("/compliance/ubo/documents", complianceHandler.UploadCorporateStructureDocument)
 
 		// Dispute resolution routes (#107)
 		disputeHandler := handlers.NewDisputeHandler(db)

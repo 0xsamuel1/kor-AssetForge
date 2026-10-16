@@ -23,21 +23,23 @@ import (
 )
 
 type AssetHandler struct {
-	db              *gorm.DB
-	stellarClient   *utils.StellarClient
-	redisClient     *redis.Client
-	emailService    services.EmailService
-	workflow        *services.WorkflowService
-	metadataService *services.MetadataService
+	db                *gorm.DB
+	stellarClient     *utils.StellarClient
+	redisClient       *redis.Client
+	emailService      services.EmailService
+	workflow          *services.WorkflowService
+	metadataService   *services.MetadataService
+	transferValidator *services.TransferValidator
 }
 
 func NewAssetHandler(db *gorm.DB, stellarClient *utils.StellarClient, redisClient *redis.Client, emailService services.EmailService, workflow ...*services.WorkflowService) *AssetHandler {
 	handler := &AssetHandler{
-		db:              db,
-		stellarClient:   stellarClient,
-		redisClient:     redisClient,
-		emailService:    emailService,
-		metadataService: services.NewMetadataService(db),
+		db:                db,
+		stellarClient:     stellarClient,
+		redisClient:       redisClient,
+		emailService:      emailService,
+		metadataService:   services.NewMetadataService(db),
+		transferValidator: services.NewTransferValidator(db),
 	}
 	if len(workflow) > 0 {
 		handler.workflow = workflow[0]
@@ -343,6 +345,21 @@ func (h *AssetHandler) ListAssetForSale(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Asset not found"})
 		return
 	}
+
+	// A seller not in good compliance standing cannot list, regardless of
+	// who ends up buying (#380).
+	if h.transferValidator != nil {
+		if err := h.transferValidator.ValidateSeller(req.SellerAddr); err != nil {
+			var violation *services.TransferRestrictionViolation
+			if errors.As(err, &violation) {
+				c.JSON(http.StatusForbidden, gin.H{"error": violation.Error()})
+				return
+			}
+			apperrors.AbortWithError(c, apperrors.Wrap(err, apperrors.CodeDatabaseError, "Failed to validate seller", http.StatusInternalServerError))
+			return
+		}
+	}
+
 	listingID := "listing_1"
 	listing := models.Listing{
 		AssetID:      req.AssetID,
@@ -401,6 +418,23 @@ func (h *AssetHandler) TransferAsset(c *gin.Context) {
 		return
 	}
 	c.Set("audit_asset_id", asset.ID)
+
+	// Enforce transfer restrictions before recording anything (#380) --
+	// whitelist/KYC/AML status on both parties, mirroring the on-chain
+	// checks in contracts/src/marketplace.rs. Previously this handler had
+	// no compliance check at all, so a restricted transfer could be
+	// recorded here even if the on-chain submission would later fail.
+	if h.transferValidator != nil {
+		if err := h.transferValidator.ValidateTransfer(req.FromAddress, req.ToAddress, req.AssetID, req.Amount); err != nil {
+			var violation *services.TransferRestrictionViolation
+			if errors.As(err, &violation) {
+				c.JSON(http.StatusForbidden, gin.H{"error": violation.Error()})
+				return
+			}
+			apperrors.AbortWithError(c, apperrors.Wrap(err, apperrors.CodeDatabaseError, "Failed to validate transfer", http.StatusInternalServerError))
+			return
+		}
+	}
 	if h.workflow != nil {
 		if requester, ok := c.Get("user_id"); ok {
 			if userID, ok := requester.(uint); ok {

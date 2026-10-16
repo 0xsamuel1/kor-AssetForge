@@ -236,7 +236,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		v1.GET("/search/analytics", searchHandler.SearchAnalytics)
 
 		// KYC / AML routes
-		kycHandler := handlers.NewKYCHandler(db, nil, emailService)
+		kycHandler := handlers.NewKYCHandler(db, nil, emailService, nil)
 		v1.POST("/kyc/submit", kycHandler.SubmitKYC)
 		v1.GET("/kyc/status", kycHandler.GetKYCStatus)
 		v1.POST("/kyc/documents", kycHandler.UploadDocument)
@@ -244,6 +244,14 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		v1.POST("/kyc/accredited", kycHandler.VerifyAccreditedInvestor)
 		v1.GET("/kyc/audit", kycHandler.GetAuditLog)
 		v1.GET("/compliance/report", kycHandler.ComplianceReport)
+		v1.POST("/kyc/aml/review/:id", kycHandler.ResolveAMLReview)
+
+		// Beneficial ownership (UBO) routes
+		complianceHandler := handlers.NewComplianceHandler(db)
+		v1.POST("/compliance/ubo", complianceHandler.DeclareBeneficialOwner)
+		v1.GET("/compliance/ubo", complianceHandler.ListBeneficialOwners)
+		v1.POST("/compliance/ubo/:id/resolve", complianceHandler.ResolveUBOReview)
+		v1.POST("/compliance/ubo/documents", complianceHandler.UploadCorporateStructureDocument)
 
 		// Dispute resolution routes
 		disputeHandler := handlers.NewDisputeHandler(db)

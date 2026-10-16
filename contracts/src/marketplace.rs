@@ -434,6 +434,17 @@ impl Marketplace {
         Self::require_whitelisted_if_private(&env, asset_id, &buyer);
         // Enforce accredited investor check if whitelist contract is configured
         Self::require_accredited_investor(&env, &buyer);
+        // Enforce the asset's full TransferRestrictionConfig (max amount,
+        // compliance verification, lock-up, minimum holding period, and
+        // approval requirement) exactly as `purchase_internal` /
+        // `purchase_with_approval` already do -- previously this was the
+        // only transfer path that skipped it entirely, so an asset
+        // configured with e.g. a lock-up or a transfer cap was enforceable
+        // only if buyers happened to go through the approval flow (#380).
+        // `approval_id: None` correctly rejects a restricted asset with
+        // `approval_required = true` here, same as any other direct
+        // (non-pre-approved) transfer attempt.
+        Self::enforce_transfer_restrictions(&env, &buyer, asset_id, amount, None);
 
         // Collect fee and credit referral reward
         if env.storage().instance().has(&BuyBackDataKey::BuyBackConfigKey) {
