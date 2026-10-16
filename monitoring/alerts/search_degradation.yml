@@ -1,0 +1,37 @@
+groups:
+  - name: search-degradation
+    interval: 30s
+    rules:
+      - alert: SearchUsingDatabaseFallback
+        expr: sum(rate(search_fallback_total[5m])) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: search
+        annotations:
+          summary: "Asset search is using the database fallback"
+          description: "Elasticsearch failures are causing {{ $value | humanize }} fallback operations/sec. See docs/runbooks/elasticsearch-failures.md."
+
+      - alert: ElasticsearchSearchUnavailable
+        expr: search_elasticsearch_available == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: search
+        annotations:
+          summary: "Elasticsearch has been unavailable for search"
+          description: "Search has remained degraded for five minutes and is being served by PostgreSQL."
+
+      - alert: SearchFallbackRateHigh
+        expr: |
+          sum(rate(search_fallback_total[10m]))
+          /
+          clamp_min(sum(rate(search_backend_requests_total[10m])), 0.001)
+          > 0.10
+        for: 10m
+        labels:
+          severity: critical
+          service: search
+        annotations:
+          summary: "More than 10% of searches are falling back"
+          description: "The fallback ratio is {{ $value | humanizePercentage }} over ten minutes."

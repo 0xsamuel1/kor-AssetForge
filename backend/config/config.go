@@ -141,6 +141,10 @@ func InitDB() (*gorm.DB, error) {
 		&models.WatchlistItem{},
 		// User activity model (#161)
 		&models.UserActivity{},
+		// Recommendation history powers personalized search ranking.
+		&models.UserInteraction{},
+		&models.UserPreference{},
+		&models.AssetRecommendation{},
 		// Email template models (#163)
 		&models.EmailTemplate{},
 		&models.EmailTemplateVersion{},
