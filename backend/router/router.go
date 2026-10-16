@@ -178,26 +178,30 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		assetHandler := handlers.NewAssetHandler(db, stellarClient, redisClient, emailService)
 		v1.POST("/assets/tokenize",
 			middleware.InvalidateOnWrite(cacheManager, "kor:asset:*"),
+			middleware.InvalidateOnWriteTags(cacheManager, "asset"),
 			assetHandler.TokenizeAsset)
 		v1.POST("/assets",
 			middleware.InvalidateOnWrite(cacheManager, "kor:asset:*"),
+			middleware.InvalidateOnWriteTags(cacheManager, "asset"),
 			assetHandler.TokenizeAsset)
 		v1.GET("/assets",
-			middleware.HTTPCache(cacheManager, 5*time.Minute, "kor:asset", nil),
+			middleware.HTTPCache(cacheManager, 5*time.Minute, "kor:asset", nil, "asset"),
 			assetHandler.ListAssets)
 		v1.GET("/assets/:id",
-			middleware.HTTPCache(cacheManager, 5*time.Minute, "kor:asset", nil),
+			middleware.HTTPCache(cacheManager, 5*time.Minute, "kor:asset", nil, "asset"),
 			assetHandler.GetAsset)
 
 		// NFT Metadata routes
 		v1.POST("/assets/metadata",
 			middleware.InvalidateOnWrite(cacheManager, "kor:asset:*"),
+			middleware.InvalidateOnWriteTags(cacheManager, "asset"),
 			assetHandler.UpdateMetadata)
 		v1.GET("/assets/:id/metadata",
-			middleware.HTTPCache(cacheManager, 5*time.Minute, "kor:asset", nil),
+			middleware.HTTPCache(cacheManager, 5*time.Minute, "kor:asset", nil, "asset"),
 			assetHandler.GetMetadata)
 		v1.POST("/assets/metadata/immutable",
 			middleware.InvalidateOnWrite(cacheManager, "kor:asset:*"),
+			middleware.InvalidateOnWriteTags(cacheManager, "asset"),
 			assetHandler.MakeMetadataImmutable)
 
 		// Oracle price feed routes
@@ -213,6 +217,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		v1.POST("/batch/execute",
 			middleware.BatchValidator(),
 			middleware.InvalidateOnWrite(cacheManager, "kor:asset:*"),
+			middleware.InvalidateOnWriteTags(cacheManager, "asset"),
 			assetHandler.ExecuteBatch)
 		v1.POST("/batch/submit",
 			middleware.BatchValidator(),
@@ -233,9 +238,11 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		// Marketplace routes
 		v1.POST("/marketplace/list",
 			middleware.InvalidateOnWrite(cacheManager, "kor:asset:*"),
+			middleware.InvalidateOnWriteTags(cacheManager, "asset"),
 			assetHandler.ListAssetForSale)
 		v1.POST("/marketplace/transfer",
 			middleware.InvalidateOnWrite(cacheManager, "kor:asset:*"),
+			middleware.InvalidateOnWriteTags(cacheManager, "asset"),
 			assetHandler.TransferAsset)
 		v1.GET("/transactions", assetHandler.ListTransactions)
 

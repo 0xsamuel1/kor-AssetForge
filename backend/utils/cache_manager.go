@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -77,6 +78,7 @@ type CacheMetrics struct {
 	L2Misses atomic.Int64
 	Errors   atomic.Int64
 	Evictions atomic.Int64
+	LockContention atomic.Int64
 }
 
 // Snapshot returns a point-in-time copy suitable for JSON serialisation.
@@ -88,6 +90,7 @@ func (m *CacheMetrics) Snapshot() map[string]int64 {
 		"l2_misses": m.L2Misses.Load(),
 		"errors":    m.Errors.Load(),
 		"evictions": m.Evictions.Load(),
+		"lock_contention": m.LockContention.Load(),
 		"total_hits": m.L1Hits.Load() + m.L2Hits.Load(),
 		"total_misses": m.L1Misses.Load() + m.L2Misses.Load(),
 	}
@@ -220,6 +223,80 @@ func (cm *CacheManager) GetOrLoad(ctx context.Context, key string, ttl time.Dura
 	return val.([]byte), nil
 }
 
+// GetOrLoadDistributed is like GetOrLoad but additionally prevents cache
+// stampedes across multiple process instances using a Redis SETNX lock.
+// Only the instance that acquires the lock runs loader; other instances
+// (and other goroutines within the same instance) poll until the value
+// becomes available or lockWait elapses, in which case they fall back to
+// a stale L1 entry if one exists, or ErrCacheMiss.
+func (cm *CacheManager) GetOrLoadDistributed(ctx context.Context, key string, ttl time.Duration, lockWait time.Duration, loader func() (interface{}, error)) ([]byte, error) {
+	if val, err := cm.Get(ctx, key); err == nil {
+		return val, nil
+	}
+
+	val, err, _ := cm.sf.Do(key, func() (interface{}, error) {
+		if cm.redis == nil {
+			return cm.loadAndSet(ctx, key, ttl, loader)
+		}
+
+		lockKey := "lock:" + key
+		token := uuid.NewString()
+		acquired, lockErr := cm.redis.SetNX(ctx, lockKey, token, lockWait).Result()
+		if lockErr != nil {
+			cm.Metrics.Errors.Add(1)
+			return cm.loadAndSet(ctx, key, ttl, loader) // Redis unavailable: degrade to local load
+		}
+
+		if acquired {
+			defer cm.releaseLock(ctx, lockKey, token)
+			return cm.loadAndSet(ctx, key, ttl, loader)
+		}
+
+		// Lost the race: wait for the winner to populate the cache.
+		cm.Metrics.LockContention.Add(1)
+		deadline := time.Now().Add(lockWait)
+		for time.Now().Before(deadline) {
+			if raw, getErr := cm.Get(ctx, key); getErr == nil {
+				return raw, nil
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		// Timed out waiting: fall back to a stale L1 entry if present.
+		if raw, ok := cm.l1.Load(key); ok {
+			return cm.decompress(raw.(*l1Entry).value), nil
+		}
+		return nil, ErrCacheMiss
+	})
+	if err != nil {
+		return nil, err
+	}
+	return val.([]byte), nil
+}
+
+func (cm *CacheManager) loadAndSet(ctx context.Context, key string, ttl time.Duration, loader func() (interface{}, error)) ([]byte, error) {
+	data, err := loader()
+	if err != nil {
+		return nil, err
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	_ = cm.Set(ctx, key, jsonData, ttl)
+	return jsonData, nil
+}
+
+// releaseLock deletes the distributed lock only if it is still held by the
+// same token, to avoid releasing a lock acquired by a different holder
+// after this one expired.
+func (cm *CacheManager) releaseLock(ctx context.Context, lockKey, token string) {
+	val, err := cm.redis.Get(ctx, lockKey).Result()
+	if err == nil && val == token {
+		cm.redis.Del(ctx, lockKey)
+	}
+}
+
 // Invalidate removes all keys matching a prefix pattern from both tiers.
 // L1 is scanned directly; Redis uses SCAN to avoid blocking.
 func (cm *CacheManager) Invalidate(ctx context.Context, pattern string) error {
@@ -251,6 +328,49 @@ func (cm *CacheManager) Invalidate(ctx context.Context, pattern string) error {
 				break
 			}
 		}
+	}
+	return nil
+}
+
+// SetWithTags behaves like Set but additionally records key under each of
+// the given tags, so that related cache entries can be invalidated together
+// via InvalidateTag, even when they don't share a common key prefix.
+func (cm *CacheManager) SetWithTags(ctx context.Context, key string, value []byte, ttl time.Duration, tags ...string) error {
+	if err := cm.Set(ctx, key, value, ttl); err != nil {
+		return err
+	}
+	if cm.redis == nil || len(tags) == 0 {
+		return nil
+	}
+	for _, tag := range tags {
+		if err := cm.redis.SAdd(ctx, "tag:"+tag, key).Err(); err != nil {
+			cm.Metrics.Errors.Add(1)
+			log.Printf("CacheManager: Redis SAdd error for tag %s: %v", tag, err)
+		}
+	}
+	return nil
+}
+
+// InvalidateTag deletes every key previously associated with tag via
+// SetWithTags, across both cache tiers, and removes the tag's own index.
+func (cm *CacheManager) InvalidateTag(ctx context.Context, tag string) error {
+	if cm.redis == nil {
+		return nil
+	}
+	tagKey := "tag:" + tag
+	keys, err := cm.redis.SMembers(ctx, tagKey).Result()
+	if err != nil {
+		cm.Metrics.Errors.Add(1)
+		return err
+	}
+	if len(keys) > 0 {
+		if err := cm.Delete(ctx, keys...); err != nil {
+			return err
+		}
+	}
+	if err := cm.redis.Del(ctx, tagKey).Err(); err != nil {
+		cm.Metrics.Errors.Add(1)
+		return err
 	}
 	return nil
 }

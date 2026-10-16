@@ -15,6 +15,19 @@ export interface WSMessage<T = unknown> {
   type: string;
   payload: T;
   timestamp?: number;
+  /**
+   * Monotonically increasing sequence number assigned by the server hub.
+   * Used by WebSocketClient to detect gaps and reorder out-of-order
+   * delivery. Messages without a seq (e.g. client-originated pings) are
+   * delivered immediately without ordering guarantees.
+   */
+  seq?: number;
+}
+
+/** Emitted on the special "__gap__" subscription when messages are lost. */
+export interface WSGapEvent {
+  from: number;
+  to: number;
 }
 
 export type WSMessageHandler<T = unknown> = (msg: WSMessage<T>) => void;
@@ -47,6 +60,12 @@ export class WebSocketClient {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private messageQueue: string[] = [];
   private handlers: Map<string, Set<WSMessageHandler>> = new Map();
+
+  /** Ordering state for sequenced messages (see WSMessage.seq). */
+  private lastSeq: number | null = null;
+  private seqBuffer: Map<number, WSMessage> = new Map();
+  private seqGapTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly SEQ_GAP_TIMEOUT_MS = 500;
 
   private readonly url: string;
   private readonly heartbeatInterval: number;
@@ -83,6 +102,14 @@ export class WebSocketClient {
 
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
+      // A new connection resumes the server's seq stream at an unknown
+      // point, so ordering state must restart rather than carry over.
+      this.lastSeq = null;
+      this.seqBuffer.clear();
+      if (this.seqGapTimer) {
+        clearTimeout(this.seqGapTimer);
+        this.seqGapTimer = null;
+      }
       this.setStatus("connected");
       this.startHeartbeat();
       this.flushQueue();
@@ -185,8 +212,12 @@ export class WebSocketClient {
   private scheduleReconnect(): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
 
-    const delay =
+    const baseDelay =
       this.reconnectDelay * Math.pow(2, Math.min(this.reconnectAttempts, 6));
+    // Full jitter: spreads reconnect attempts from many clients disconnected
+    // by the same event (e.g. a server restart) instead of all retrying in
+    // lockstep and causing a connection storm.
+    const delay = baseDelay / 2 + Math.random() * (baseDelay / 2);
     this.reconnectAttempts += 1;
 
     this.reconnectTimer = setTimeout(() => {
@@ -216,6 +247,86 @@ export class WebSocketClient {
   }
 
   private dispatch(msg: WSMessage): void {
+    if (typeof msg.seq !== "number") {
+      // Unsequenced messages (e.g. client-originated echoes) have no
+      // ordering guarantee to enforce — deliver immediately.
+      this.deliverMessage(msg);
+      return;
+    }
+    this.handleSequencedMessage(msg);
+  }
+
+  /**
+   * Buffers and reorders messages by WSMessage.seq, delivering them to
+   * handlers strictly in order. Out-of-order arrivals are held until the
+   * gap is filled or SEQ_GAP_TIMEOUT_MS elapses, at which point delivery
+   * resumes from the next available message and a "__gap__" event fires.
+   */
+  private handleSequencedMessage(msg: WSMessage): void {
+    const seq = msg.seq as number;
+
+    if (this.lastSeq === null) {
+      // First sequenced message on this connection establishes the baseline.
+      this.lastSeq = seq;
+      this.deliverMessage(msg);
+      this.drainSeqBuffer();
+      return;
+    }
+
+    if (seq <= this.lastSeq) {
+      return; // duplicate or stale retransmission — ignore
+    }
+
+    if (seq === this.lastSeq + 1) {
+      this.lastSeq = seq;
+      this.deliverMessage(msg);
+      this.drainSeqBuffer();
+      return;
+    }
+
+    // Out-of-order / gap: hold until the missing message(s) arrive.
+    this.seqBuffer.set(seq, msg);
+    this.scheduleGapRecovery();
+  }
+
+  private drainSeqBuffer(): void {
+    while (this.lastSeq !== null && this.seqBuffer.has(this.lastSeq + 1)) {
+      const next = this.seqBuffer.get(this.lastSeq + 1)!;
+      this.seqBuffer.delete(this.lastSeq + 1);
+      this.lastSeq += 1;
+      this.deliverMessage(next);
+    }
+    if (this.seqBuffer.size === 0 && this.seqGapTimer) {
+      clearTimeout(this.seqGapTimer);
+      this.seqGapTimer = null;
+    }
+  }
+
+  private scheduleGapRecovery(): void {
+    if (this.seqGapTimer) return;
+    this.seqGapTimer = setTimeout(() => {
+      this.seqGapTimer = null;
+      if (this.seqBuffer.size === 0 || this.lastSeq === null) return;
+
+      // The missing message(s) never arrived in time. Skip ahead to the
+      // lowest buffered seq so delivery can resume, and flag the gap.
+      const resumeSeq = Math.min(...this.seqBuffer.keys());
+      const from = this.lastSeq;
+      this.lastSeq = resumeSeq - 1;
+      this.dispatchGapEvent(from, resumeSeq);
+      this.drainSeqBuffer();
+    }, WebSocketClient.SEQ_GAP_TIMEOUT_MS);
+  }
+
+  private dispatchGapEvent(from: number, to: number): void {
+    const gapEvent: WSMessage<WSGapEvent> = {
+      type: "__gap__",
+      payload: { from, to },
+    };
+    this.handlers.get("__gap__")?.forEach((h) => h(gapEvent));
+  }
+
+  private deliverMessage(msg: WSMessage): void {
     const typeHandlers = this.handlers.get(msg.type);
     typeHandlers?.forEach((h) => h(msg));
 
