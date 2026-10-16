@@ -1,0 +1,11 @@
+{
+  "title": "AssetForge Search Analytics",
+  "panels": [
+    {"title": "Searches", "metric": "search_events_total"},
+    {"title": "Zero-result searches", "metric": "search_zero_result_total"},
+    {"title": "Click-through rate", "metric": "search_click_through_rate"},
+    {"title": "Popular queries", "metric": "search_query_counts"},
+    {"title": "Search latency", "metric": "search_duration_ms"}
+  ],
+  "source": "/api/v1/search/analytics"
+}

@@ -657,11 +657,13 @@ func (h *AssetHandler) ExecuteBatch(c *gin.Context) {
 
 	operationsJSON, _ := json.Marshal(req.Operations)
 
+	startedAt := time.Now()
 	batch := models.BatchTransaction{
 		UserID:          userID.(uint),
 		Operations:      string(operationsJSON),
-		Status:          "pending",
+		Status:          "processing",
 		TotalOperations: len(req.Operations),
+		StartedAt:       &startedAt,
 	}
 
 	if err := h.db.Create(&batch).Error; err != nil {
@@ -672,6 +674,7 @@ func (h *AssetHandler) ExecuteBatch(c *gin.Context) {
 	var completedOps int
 	var failedOps int
 	var lastError string
+	results := make([]models.BatchOperationResult, 0, len(req.Operations))
 
 	tx := h.db.Begin()
 
@@ -682,6 +685,7 @@ func (h *AssetHandler) ExecuteBatch(c *gin.Context) {
 			if err := tx.First(&asset, op.AssetID).Error; err != nil {
 				failedOps++
 				lastError = fmt.Sprintf("operation %d: asset not found", i)
+				results = append(results, models.BatchOperationResult{Index: i, Type: op.Type, Error: lastError})
 				continue
 			}
 
@@ -696,9 +700,11 @@ func (h *AssetHandler) ExecuteBatch(c *gin.Context) {
 			if err := tx.Create(&transaction).Error; err != nil {
 				failedOps++
 				lastError = fmt.Sprintf("operation %d: %v", i, err)
+				results = append(results, models.BatchOperationResult{Index: i, Type: op.Type, Error: lastError})
 				continue
 			}
 			completedOps++
+			results = append(results, models.BatchOperationResult{Index: i, Type: op.Type, Success: true, TxHash: transaction.TxHash, ResourceID: transaction.TxHash})
 
 		case "list":
 			listing := models.Listing{
@@ -717,9 +723,11 @@ func (h *AssetHandler) ExecuteBatch(c *gin.Context) {
 			if err := tx.Create(&listing).Error; err != nil {
 				failedOps++
 				lastError = fmt.Sprintf("operation %d: %v", i, err)
+				results = append(results, models.BatchOperationResult{Index: i, Type: op.Type, Error: lastError})
 				continue
 			}
 			completedOps++
+			results = append(results, models.BatchOperationResult{Index: i, Type: op.Type, Success: true, ResourceID: listing.ListingID})
 
 		case "cancel_listing":
 			var listingID string
@@ -731,28 +739,57 @@ func (h *AssetHandler) ExecuteBatch(c *gin.Context) {
 			if listingID == "" {
 				failedOps++
 				lastError = fmt.Sprintf("operation %d: listing_id required", i)
+				results = append(results, models.BatchOperationResult{Index: i, Type: op.Type, Error: lastError})
+				continue
+			}
+			var listing models.Listing
+			if err := tx.Where("listing_id = ?", listingID).First(&listing).Error; err != nil {
+				failedOps++
+				lastError = fmt.Sprintf("operation %d: listing not found", i)
+				results = append(results, models.BatchOperationResult{Index: i, Type: op.Type, Error: lastError})
 				continue
 			}
 			if err := tx.Model(&models.Listing{}).Where("listing_id = ?", listingID).Update("active", false).Error; err != nil {
 				failedOps++
 				lastError = fmt.Sprintf("operation %d: %v", i, err)
+				results = append(results, models.BatchOperationResult{Index: i, Type: op.Type, Error: lastError})
 				continue
 			}
 			completedOps++
+			previousActive := listing.Active
+			results = append(results, models.BatchOperationResult{Index: i, Type: op.Type, Success: true, ResourceID: listingID, PreviousActive: &previousActive})
 
 		default:
 			failedOps++
 			lastError = fmt.Sprintf("operation %d: unsupported type %s", i, op.Type)
+			results = append(results, models.BatchOperationResult{Index: i, Type: op.Type, Error: lastError})
 		}
+
+		batch.CompletedCount = completedOps
+		batch.FailedCount = failedOps
+		batch.ProgressPercent = float64(i+1) / float64(batch.TotalOperations) * 100
+		remaining := batch.TotalOperations - i - 1
+		if i >= 0 && remaining > 0 {
+			elapsed := time.Since(startedAt)
+			batch.EstimatedSecondsRemaining = int64(elapsed.Seconds() * float64(remaining) / float64(i+1))
+		}
+		h.db.Model(&batch).Updates(map[string]interface{}{"completed_count": completedOps, "failed_count": failedOps, "progress_percent": batch.ProgressPercent, "estimated_seconds_remaining": batch.EstimatedSecondsRemaining})
+		BroadcastEvent(TopicTransactions, EventBatchProgress, gin.H{"batch_id": batch.ID, "completed": completedOps, "failed": failedOps, "total": batch.TotalOperations, "progress_percent": batch.ProgressPercent})
 	}
 
 	batch.CompletedCount = completedOps
 	batch.FailedCount = failedOps
 	batch.ErrorDetails = lastError
+	resultsJSON, _ := json.Marshal(results)
+	batch.OperationResults = string(resultsJSON)
+	finishedAt := time.Now()
+	batch.FinishedAt = &finishedAt
+	batch.ProgressPercent = 100
 
 	if failedOps > 0 && completedOps == 0 {
 		tx.Rollback()
 		batch.Status = "failed"
+		batch.OperationResults = string(resultsJSON)
 		h.db.Save(&batch)
 		apperrors.AbortWithError(c, apperrors.NewBadRequestError("All batch operations failed: "+lastError))
 		return
@@ -778,6 +815,72 @@ func (h *AssetHandler) ExecuteBatch(c *gin.Context) {
 		"failed":           failedOps,
 		"tx_hash":          batch.TxHash,
 	})
+}
+
+// RollbackBatch compensates completed operations. Repeating the request is safe.
+func (h *AssetHandler) RollbackBatch(c *gin.Context) {
+	userID, exists := c.Get("user_id")
+	if !exists {
+		apperrors.AbortWithError(c, apperrors.NewUnauthorizedError("User not authenticated"))
+		return
+	}
+	var batch models.BatchTransaction
+	if err := h.db.First(&batch, c.Param("id")).Error; err != nil {
+		apperrors.AbortWithError(c, apperrors.NewNotFoundError("Batch not found"))
+		return
+	}
+	if batch.UserID != userID.(uint) {
+		apperrors.AbortWithError(c, apperrors.NewForbiddenError("Access denied"))
+		return
+	}
+	if batch.Status == models.BatchStatusRolledBack {
+		c.JSON(http.StatusOK, batch)
+		return
+	}
+	if batch.Status != models.BatchStatusCompleted && batch.Status != models.BatchStatusCompletedWithErrors {
+		apperrors.AbortWithError(c, apperrors.NewBadRequestError("Only completed batches can be rolled back"))
+		return
+	}
+	var results []models.BatchOperationResult
+	if err := json.Unmarshal([]byte(batch.OperationResults), &results); err != nil {
+		apperrors.AbortWithError(c, apperrors.NewInternalError("Batch results are not rollback-safe"))
+		return
+	}
+	tx := h.db.Begin()
+	for _, result := range results {
+		if !result.Success {
+			continue
+		}
+		switch result.Type {
+		case "transfer":
+			if err := tx.Where("tx_hash = ?", result.ResourceID).Delete(&models.Transaction{}).Error; err != nil {
+				tx.Rollback()
+				apperrors.AbortWithError(c, apperrors.NewDatabaseError("Failed to roll back transfer", err))
+				return
+			}
+		case "list":
+			if err := tx.Where("listing_id = ?", result.ResourceID).Delete(&models.Listing{}).Error; err != nil {
+				tx.Rollback()
+				apperrors.AbortWithError(c, apperrors.NewDatabaseError("Failed to roll back listing", err))
+				return
+			}
+		case "cancel_listing":
+			if result.PreviousActive != nil {
+				if err := tx.Model(&models.Listing{}).Where("listing_id = ?", result.ResourceID).Update("active", *result.PreviousActive).Error; err != nil {
+					tx.Rollback()
+					apperrors.AbortWithError(c, apperrors.NewDatabaseError("Failed to restore listing", err))
+					return
+				}
+			}
+		}
+	}
+	if err := tx.Commit().Error; err != nil {
+		apperrors.AbortWithError(c, apperrors.NewDatabaseError("Failed to commit rollback", err))
+		return
+	}
+	now := time.Now()
+	h.db.Model(&batch).Updates(map[string]interface{}{"status": models.BatchStatusRolledBack, "rollback_at": now, "rollback_details": "compensated completed operations"})
+	c.JSON(http.StatusOK, gin.H{"batch_id": batch.ID, "status": models.BatchStatusRolledBack})
 }
 
 // GetBatchStatus returns the status of a batch transaction
