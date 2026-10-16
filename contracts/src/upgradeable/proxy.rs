@@ -26,7 +26,7 @@
 // is assumed to be governed by a timelock and, where required, an external
 // governance vote (see `set_governance_approver`).
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol};
 
 // ---------------------------------------------------------------------------
 // Storage Keys
@@ -870,7 +870,7 @@ mod test {
 
     #[test]
     fn test_multiple_sequential_upgrades() {
-        let (env, admin, impl_v1, _proxy_id, client) = setup();
+        let (env, admin, _impl_v1, _proxy_id, client) = setup();
 
         for _ in 0..3 {
             let next = Address::generate(&env);

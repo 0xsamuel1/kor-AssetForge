@@ -10,7 +10,7 @@ extern crate kor_assetforge_contracts;
 
 use kor_assetforge_contracts::upgradeable::proxy::{Proxy, ProxyClient};
 use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{Address, Env};
 
 const TIMELOCK: u64 = 3_600;
 
@@ -50,21 +50,21 @@ fn upgrade_changes_implementation_but_not_proxy_address() {
 fn upgrade_flow_preserves_version_history() {
     let (env, admin, _impl_v1, _proxy_id, client) = setup(TIMELOCK);
 
-    let mut versions = Vec::new(&env);
-    for i in 0..3u8 {
+    let mut versions: std::vec::Vec<Address> = std::vec::Vec::new();
+    for step in 0..3u8 {
         let implementation = Address::generate(&env);
-        versions.push_back(implementation.clone());
+        versions.push(implementation.clone());
         client.propose_implementation(&admin, &implementation);
         env.ledger().with_mut(|li| li.timestamp += TIMELOCK);
         client.execute_upgrade(&admin);
-        assert_eq!(client.get_version(), 2 + i as u32);
+        assert_eq!(client.get_version(), 2 + step as u32);
     }
 
     assert_eq!(client.get_upgrade_count(), 3);
-    for i in 0..3u32 {
-        let record = client.get_upgrade_record(&i).unwrap();
-        assert_eq!(record.version, i + 2);
-        assert_eq!(record.implementation, versions.get(i as u32).unwrap());
+    for (i, implementation) in versions.iter().enumerate() {
+        let record = client.get_upgrade_record(&(i as u32)).unwrap();
+        assert_eq!(record.version, i as u32 + 2);
+        assert_eq!(&record.implementation, implementation);
     }
 }
 
