@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { FractionalizationConfig } from "./FractionalizationWizard";
+import { CardGridSkeleton } from "@/components/LoadingSkeleton";
 
 interface Asset {
   id: number;
@@ -53,9 +54,7 @@ export function AssetSelectionStep({ onAssetSelected }: AssetSelectionStepProps)
 
   if (isLoading) {
     return (
-      <div className="flex justify-center py-12">
-        <p className="text-muted-foreground">Loading assets...</p>
-      </div>
+      <CardGridSkeleton count={4} className="lg:grid-cols-2" label="Loading assets" />
     );
   }
 

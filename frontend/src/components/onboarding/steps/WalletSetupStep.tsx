@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, ArrowRight, ExternalLink, AlertCircle, CheckCircle, Wallet } from "lucide-react";
 import { stellarService, StellarWallet } from "@/lib/stellar";
+import { ButtonSpinner } from "@/components/LoadingSpinner";
 
 interface WalletSetupStepProps {
   onNext: () => void
@@ -77,7 +78,8 @@ export function WalletSetupStep({ onNext, onPrev, wallet, onWalletConnected }: W
         </div>
       ) : (
         <Button onClick={handleConnect} disabled={isConnecting} className="w-full">
-          {isConnecting ? "Connecting..." : "Connect Freighter Wallet"}
+          {isConnecting && <ButtonSpinner />}
+          {isConnecting ? "Connecting…" : "Connect Freighter Wallet"}
         </Button>
       )}
 

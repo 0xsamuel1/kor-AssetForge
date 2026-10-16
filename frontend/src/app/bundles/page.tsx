@@ -9,6 +9,7 @@ import { BundleAnalytics } from "@/components/bundles/BundleAnalytics";
 import { StellarWallet } from "@/lib/stellar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Package, PlusCircle, BarChart2 } from "lucide-react";
+import { CardGridSkeleton } from "@/components/LoadingSkeleton";
 
 export default function BundlesPage() {
   const [wallet, setWallet] = useState<StellarWallet | undefined>();
@@ -76,7 +77,7 @@ export default function BundlesPage() {
 
           <TabsContent value="browse">
             {isLoading ? (
-              <p className="text-muted-foreground text-sm">Loading bundles…</p>
+              <CardGridSkeleton count={4} className="lg:grid-cols-2" label="Loading bundles" />
             ) : (
               <BundleList bundles={bundles} wallet={wallet} onUpdated={loadBundles} />
             )}

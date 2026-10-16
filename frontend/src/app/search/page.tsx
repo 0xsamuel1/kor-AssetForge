@@ -13,9 +13,10 @@ import { formatCurrency } from "@/lib/utils";
 import { StellarWallet, stellarService } from "@/lib/stellar";
 import {
   Building2, TrendingUp, TrendingDown, Shield,
-  MapPin, Loader2, Bookmark, BookmarkCheck,
+  MapPin, Bookmark, BookmarkCheck,
 } from "lucide-react";
 import Link from "next/link";
+import { CardGridSkeleton, PageSkeleton } from "@/components/LoadingSkeleton";
 
 function SearchContent() {
   const router = useRouter();
@@ -135,9 +136,7 @@ function SearchContent() {
           {/* Results */}
           <div className="flex-1 min-w-0">
             {isLoading ? (
-              <div className="flex items-center justify-center py-12">
-                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-              </div>
+              <CardGridSkeleton count={6} className="lg:grid-cols-2 xl:grid-cols-3" label="Searching assets" />
             ) : results.length === 0 ? (
               <div className="text-center py-12">
                 <Building2 className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
@@ -207,7 +206,7 @@ function SearchContent() {
 
 export default function SearchPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-background flex items-center justify-center"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /></div>}>
+    <Suspense fallback={<PageSkeleton label="Loading search" />}>
       <SearchContent />
     </Suspense>
   );
