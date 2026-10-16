@@ -28,11 +28,13 @@ type BatchQueueEntry struct {
 
 // BatchOperationResult tracks the result of each individual operation in a batch
 type BatchOperationResult struct {
-	Index   int    `json:"index"`
-	Type    string `json:"type"`
-	Success bool   `json:"success"`
-	Error   string `json:"error,omitempty"`
-	TxHash  string `json:"tx_hash,omitempty"`
+	Index          int    `json:"index"`
+	Type           string `json:"type"`
+	Success        bool   `json:"success"`
+	Error          string `json:"error,omitempty"`
+	TxHash         string `json:"tx_hash,omitempty"`
+	ResourceID     string `json:"resource_id,omitempty"`
+	PreviousActive *bool  `json:"previous_active,omitempty"`
 }
 
 // BatchRetryMetadata tracks retry attempts and backoff scheduling for a batch transaction

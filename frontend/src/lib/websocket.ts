@@ -32,7 +32,7 @@ export interface WSGapEvent {
 
 export type WSMessageHandler<T = unknown> = (msg: WSMessage<T>) => void;
 
-interface WebSocketClientOptions {
+export interface WebSocketClientOptions {
   /** URL of the WebSocket server */
   url: string;
   /** Heartbeat interval in ms (default: 30 000) */
@@ -41,6 +41,14 @@ interface WebSocketClientOptions {
   maxReconnectAttempts?: number;
   /** Base reconnect delay in ms (exponential back-off, default: 1 000) */
   reconnectDelay?: number;
+  /** Current access token, or a getter used for each connection attempt. */
+  accessToken?: string | (() => string | null);
+  /** Refresh token, or a getter used when the access token expires. */
+  refreshToken?: string | (() => string | null);
+  /** Auth refresh endpoint. Defaults to /api/v1/auth/refresh on the API host. */
+  refreshUrl?: string;
+  /** Optional application-specific token refresh implementation. */
+  onTokenRefresh?: () => Promise<{ accessToken: string; refreshToken?: string } | null>;
   /** Called when connection status changes */
   onStatusChange?: (status: WSStatus) => void;
 }
@@ -71,6 +79,10 @@ export class WebSocketClient {
   private readonly heartbeatInterval: number;
   private readonly maxReconnectAttempts: number;
   private readonly reconnectDelay: number;
+  private accessToken?: string | (() => string | null);
+  private refreshToken?: string | (() => string | null);
+  private readonly refreshUrl?: string;
+  private readonly onTokenRefresh?: WebSocketClientOptions["onTokenRefresh"];
   private readonly onStatusChange?: (status: WSStatus) => void;
 
   constructor(options: WebSocketClientOptions) {
@@ -78,6 +90,10 @@ export class WebSocketClient {
     this.heartbeatInterval = options.heartbeatInterval ?? 30_000;
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? 10;
     this.reconnectDelay = options.reconnectDelay ?? 1_000;
+    this.accessToken = options.accessToken;
+    this.refreshToken = options.refreshToken;
+    this.refreshUrl = options.refreshUrl;
+    this.onTokenRefresh = options.onTokenRefresh;
     this.onStatusChange = options.onStatusChange;
   }
 
@@ -94,7 +110,7 @@ export class WebSocketClient {
     this.setStatus("connecting");
 
     try {
-      this.ws = new WebSocket(this.url);
+      this.ws = new WebSocket(this.connectionUrl());
     } catch {
       this.handleError();
       return;
@@ -115,8 +131,12 @@ export class WebSocketClient {
       this.flushQueue();
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (event: CloseEvent) => {
       this.teardown();
+      if (event.code === 4001) {
+        void this.refreshAndReconnect();
+        return;
+      }
       this.scheduleReconnect();
     };
 
@@ -129,6 +149,10 @@ export class WebSocketClient {
         const msg: WSMessage = JSON.parse(event.data as string);
         // Handle pong silently
         if (msg.type === "pong") return;
+        if (msg.type === "auth.expiring") {
+          this.ws?.close(4001, "refresh required");
+          return;
+        }
         this.dispatch(msg);
       } catch {
         // Non-JSON frame — ignore
@@ -184,6 +208,65 @@ export class WebSocketClient {
   private setStatus(status: WSStatus): void {
     this.status = status;
     this.onStatusChange?.(status);
+  }
+
+  private connectionUrl(): string {
+    const token =
+      typeof this.accessToken === "function"
+        ? this.accessToken()
+        : this.accessToken;
+    if (!token) return this.url;
+    const base =
+      typeof window === "undefined" ? "http://localhost" : window.location.origin;
+    const url = new URL(this.url, base);
+    url.searchParams.set("token", token);
+    return url.toString();
+  }
+
+  private async refreshAndReconnect(): Promise<void> {
+    let result: { accessToken: string; refreshToken?: string } | null;
+    try {
+      result = this.onTokenRefresh
+        ? await this.onTokenRefresh()
+        : await this.refreshWithEndpoint();
+    } catch {
+      result = null;
+    }
+    if (!result) {
+      this.setStatus("error");
+      return;
+    }
+    this.accessToken = result.accessToken;
+    if (result.refreshToken) this.refreshToken = result.refreshToken;
+    this.reconnectAttempts = 0;
+    this.scheduleReconnect();
+  }
+
+  private async refreshWithEndpoint(): Promise<{
+    accessToken: string;
+    refreshToken?: string;
+  } | null> {
+    const refreshToken =
+      typeof this.refreshToken === "function"
+        ? this.refreshToken()
+        : this.refreshToken;
+    if (!refreshToken) return null;
+    const endpoint =
+      this.refreshUrl ??
+      `${this.url.replace(/^ws/, "http").replace(/\/ws(?:\?.*)?$/, "")}/api/v1/auth/refresh`;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!response.ok) return null;
+    const data = (await response.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+    };
+    return data.access_token
+      ? { accessToken: data.access_token, refreshToken: data.refresh_token }
+      : null;
   }
 
   private teardown(): void {

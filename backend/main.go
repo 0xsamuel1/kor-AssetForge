@@ -140,6 +140,8 @@ func main() {
 		handlers.RequestLogger(),
 		middleware.DetectLanguage(), // resolve request language for i18n (#185)
 		handlers.GlobalErrorHandler(),
+		handlers.MetricsMiddleware(),
+		handlers.BusinessMetricsMiddleware(nil),
 		middleware.RequestSizeLimiter(2<<20),
 		middleware.RequireJSON(),
 		middleware.RateLimit(20, time.Minute),
@@ -322,6 +324,9 @@ func main() {
 		v1.GET("/batch/:id",
 			middleware.HTTPCache(cacheManager, 1*time.Minute, "kor:batch", nil),
 			assetHandler.GetBatchStatus)
+		v1.POST("/batch/:id/rollback",
+			middleware.InvalidateOnWrite(cacheManager, "kor:asset:*"),
+			assetHandler.RollbackBatch)
 		v1.GET("/batches",
 			assetHandler.ListBatchTransactions)
 
@@ -349,6 +354,7 @@ func main() {
 		v1.GET("/search/autocomplete", searchHandler.Autocomplete)
 		v1.GET("/search/facets", searchHandler.Facets)
 		v1.GET("/search/analytics", searchHandler.SearchAnalytics)
+		v1.POST("/search/analytics/click", searchHandler.RecordSearchClick)
 
 		// Configurable transfer-approval workflow routes (#155).
 		approvalHandler := handlers.NewApprovalHandler(workflowService)
@@ -672,7 +678,10 @@ func main() {
 
 	// WebSocket routes (#54) — outside v1 group so the CSRF/JSON middleware
 	// does not block the Upgrade handshake.
-	wsHandler := handlers.NewWebSocketHandler()
+	wsHandler := handlers.NewWebSocketHandler(
+		getEnvOrDefault("JWT_SECRET", "your-super-secret-jwt-key-change-in-production"),
+		config.LoadWSRateLimitConfig(),
+	)
 	router.GET("/ws", wsHandler.HandleWS)
 	router.GET("/ws/stats", wsHandler.HandleWSStats)
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import Image from "next/image";
 import { FractionalizationConfig } from "./FractionalizationWizard";
 import { CardGridSkeleton } from "@/components/LoadingSkeleton";
 
@@ -88,9 +89,12 @@ export function AssetSelectionStep({ onAssetSelected }: AssetSelectionStepProps)
               >
                 <div className="flex items-start gap-4">
                   {asset.image_url && (
-                    <img
+                    <Image
                       src={asset.image_url}
                       alt={asset.name}
+                      width={64}
+                      height={64}
+                      sizes="64px"
                       className="w-16 h-16 rounded object-cover"
                     />
                   )}

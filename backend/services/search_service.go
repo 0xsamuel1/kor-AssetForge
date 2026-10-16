@@ -41,13 +41,13 @@ type SearchRequest struct {
 
 // SearchResult is the paginated response envelope.
 type SearchResult struct {
-	Total          int64          `json:"total"`
-	Page           int            `json:"page"`
-	Limit          int            `json:"limit"`
-	Assets         []models.Asset `json:"assets"`
-	Facets         SearchFacets   `json:"facets"`
-	Took           float64        `json:"took_ms"` // query duration in milliseconds
-	RankingVariant string         `json:"ranking_variant,omitempty"`
+	Total            int64          `json:"total"`
+	Page             int            `json:"page"`
+	Limit            int            `json:"limit"`
+	Assets           []models.Asset `json:"assets"`
+	Facets           SearchFacets   `json:"facets"`
+	Took             float64        `json:"took_ms"` // query duration in milliseconds
+	AnalyticsEventID string         `json:"analytics_event_id,omitempty"`
 }
 
 // SearchFacets carries aggregated filter counts for faceted navigation.

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/yourusername/kor-assetforge/config"
+	"github.com/yourusername/kor-assetforge/middleware"
 	"github.com/yourusername/kor-assetforge/utils"
 	"go.uber.org/zap"
 )
@@ -22,7 +24,9 @@ const (
 	EventTransactionNew   EventType = "transaction.new"
 	EventListingCreated   EventType = "listing.created"
 	EventMarketplaceTrade EventType = "marketplace.trade"
+	EventBatchProgress    EventType = "batch.progress"
 	EventPing             EventType = "ping"
+	EventAuthExpiring     EventType = "auth.expiring"
 )
 
 // Topic is a named channel that subscribers can filter on.
@@ -61,6 +65,7 @@ type subscriber struct {
 	conn   *utils.WSConn
 	topics map[Topic]bool
 	send   chan []byte
+	done   chan struct{}
 }
 
 func newSubscriber(id string, conn *utils.WSConn, topics []string) *subscriber {
@@ -71,7 +76,7 @@ func newSubscriber(id string, conn *utils.WSConn, topics []string) *subscriber {
 	for _, name := range topics {
 		t[Topic(name)] = true
 	}
-	return &subscriber{id: id, conn: conn, topics: t, send: make(chan []byte, 128)}
+	return &subscriber{id: id, conn: conn, topics: t, send: make(chan []byte, 128), done: make(chan struct{})}
 }
 
 func (s *subscriber) matches(topic Topic) bool {
@@ -88,6 +93,8 @@ type hubMsg struct {
 }
 
 // Hub manages all active WebSocket connections and fan-out broadcasting.
+// Registration and removal are serialized through channels so broadcasts never
+// hold a connection's read or write loop hostage.
 type Hub struct {
 	mu          sync.RWMutex
 	subscribers map[string]*subscriber
@@ -102,8 +109,8 @@ type Hub struct {
 }
 
 var (
-	globalHub  *Hub
-	hubOnce    sync.Once
+	globalHub *Hub
+	hubOnce   sync.Once
 )
 
 // GetHub returns the process-wide singleton Hub, starting its run loop once.
@@ -128,6 +135,9 @@ func (h *Hub) run() {
 	for {
 		select {
 		case sub := <-h.register:
+			if sub.done == nil {
+				sub.done = make(chan struct{})
+			}
 			h.mu.Lock()
 			h.subscribers[sub.id] = sub
 			h.mu.Unlock()
@@ -142,6 +152,11 @@ func (h *Hub) run() {
 			if sub, ok := h.subscribers[id]; ok {
 				if sub.conn != nil {
 					sub.conn.Close()
+				}
+				select {
+				case <-sub.done:
+				default:
+					close(sub.done)
 				}
 				close(sub.send)
 				delete(h.subscribers, id)
@@ -235,24 +250,38 @@ func BroadcastEvent(topic Topic, evType EventType, payload interface{}) {
 // ---- HTTP handler -----------------------------------------------------------
 
 // WebSocketHandler wires WebSocket endpoints into Gin.
-type WebSocketHandler struct{}
+type WebSocketHandler struct {
+	auth      *middleware.WSAuthValidator
+	rateConfig config.WSRateLimitConfig
+}
 
-func NewWebSocketHandler() *WebSocketHandler { return &WebSocketHandler{} }
+func NewWebSocketHandler(jwtSecret string, rateConfig config.WSRateLimitConfig) *WebSocketHandler {
+	return &WebSocketHandler{
+		auth:      middleware.NewWSAuthValidator(jwtSecret),
+		rateConfig: rateConfig,
+	}
+}
 
-// HandleWS upgrades GET /ws to a WebSocket connection.
+// HandleWS upgrades GET /ws to a WebSocket connection. The access token is
+// checked before the HTTP upgrade; after upgrading, expiry and message-rate
+// enforcement are handled by the connection's lifecycle goroutines.
 //
 // Query parameters:
 //
 //	token  – bearer token for authentication (validated below)
 //	topics – repeated; one of: assets, transactions, marketplace, all (default)
 func (wsh *WebSocketHandler) HandleWS(c *gin.Context) {
-	// Lightweight auth: accept any non-empty token; production would verify JWT.
 	token := c.Query("token")
 	if token == "" {
 		token = c.GetHeader("Authorization")
 	}
 	if token == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication token required"})
+		return
+	}
+	claims, err := wsh.auth.Validate(token)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
 		return
 	}
 
@@ -272,8 +301,13 @@ func (wsh *WebSocketHandler) HandleWS(c *gin.Context) {
 	}
 
 	sub := newSubscriber(reqID, wsConn, topicParams)
+	rateLimit := middleware.NewWebSocketRateLimiter(
+		wsh.rateConfig.MessagesPerSecond,
+		wsh.rateConfig.Burst,
+	)
 	hub := GetHub()
 	hub.register <- sub
+	go wsh.expiryLoop(sub, claims.ExpiresAt)
 
 	// Reader loop: handles ping/pong, close frames, and client commands.
 	for {
@@ -289,11 +323,45 @@ func (wsh *WebSocketHandler) HandleWS(c *gin.Context) {
 			_ = wsConn.WritePong(msg)
 		case utils.OpText:
 			// Client can send {"action":"subscribe","topic":"assets"} etc.
+			if !rateLimit.Allow() {
+				wsConn.CloseWithCode(1008, "message rate limit exceeded")
+				hub.unregister <- sub.id
+				return
+			}
 			wsh.handleClientMessage(sub, msg)
 		}
 	}
 
 	hub.unregister <- sub.id
+}
+
+func (wsh *WebSocketHandler) expiryLoop(sub *subscriber, expiresAt time.Time) {
+	warningAt := expiresAt.Add(-time.Minute)
+	if delay := time.Until(warningAt); delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			data, _ := json.Marshal(WSEvent{Type: EventAuthExpiring, Payload: nil, Timestamp: time.Now()})
+			select {
+			case sub.send <- data:
+			case <-sub.done:
+				return
+			}
+		case <-sub.done:
+			return
+		}
+	}
+
+	if delay := time.Until(expiresAt); delay > 0 {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			sub.conn.CloseWithCode(4001, "token expired")
+		case <-sub.done:
+		}
+	}
 }
 
 // handleClientMessage processes JSON commands sent by the client.
