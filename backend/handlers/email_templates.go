@@ -384,7 +384,10 @@ func (h *EmailTemplateHandler) RollbackToVersion(c *gin.Context) {
 	var req struct {
 		ChangeNote string `json:"change_note"`
 	}
-	_ = c.ShouldBindJSON(&req) // note is optional
+	if err := c.ShouldBindJSON(&req); err != nil && c.Request.ContentLength > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid template payload", "details": err.Error()})
+		return
+	}
 
 	result, err := h.Versioning.RollbackToVersion(uint(templateID), targetVersion, currentUserID(c), req.ChangeNote)
 	if err != nil {
@@ -420,3 +423,4 @@ func (h *EmailTemplateHandler) DiffVersions(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "data": diff})
 }
+

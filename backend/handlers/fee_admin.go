@@ -176,7 +176,10 @@ func (h *FeeAdminHandler) DeactivateFeeConfig(c *gin.Context) {
 	var body struct {
 		Reason string `json:"reason"`
 	}
-	_ = c.ShouldBindJSON(&body)
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid fee payload", "details": err.Error()})
+		return
+	}
 
 	if err := h.feeService.DeactivateFeeConfig(id, adminID, body.Reason); err != nil {
 		status := http.StatusInternalServerError
@@ -376,3 +379,4 @@ func resolveTime(t *time.Time, fallback time.Time) time.Time {
 	}
 	return fallback
 }
+
