@@ -36,6 +36,8 @@ type User struct {
 	BackupCodes              string         `gorm:"type:text" json:"-"`
 	RecoveryCodesGeneratedAt *time.Time     `json:"-"`
 	LastLoginAt              *time.Time     `json:"last_login_at,omitempty"`
+	FailedLoginAttempts      int            `json:"-"`
+	LockedUntil              *time.Time     `json:"-"`
 	CreatedAt            time.Time      `json:"created_at"`
 	UpdatedAt            time.Time      `json:"updated_at"`
 	DeletedAt            gorm.DeletedAt `gorm:"index" json:"-"`

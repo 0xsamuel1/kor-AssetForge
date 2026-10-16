@@ -72,11 +72,12 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		JWTExpirationHours: getEnvIntOrDefault("JWT_EXPIRATION_HOURS", 24),
 		RefreshTokenHours:  getEnvIntOrDefault("REFRESH_TOKEN_HOURS", 168),
 		EmailTokenHours:    getEnvIntOrDefault("EMAIL_TOKEN_HOURS", 24),
-		PasswordResetHours: getEnvIntOrDefault("PASSWORD_RESET_HOURS", 1),
+		PasswordResetMinutes: getEnvIntOrDefault("PASSWORD_RESET_HOURS", 30),
 		BcryptCost:         getEnvIntOrDefault("BCRYPT_COST", 12),
 	}
 	emailService := services.NewEmailServiceFromEnv()
 	authHandler := auth.NewAuthHandler(db, authConfig, emailService)
+	fileUploadHandler := handlers.NewFileUploadHandler()
 	authMiddleware := auth.NewAuthMiddleware(authConfig.JWTSecret)
 	authRateLimiter := auth.NewAuthRateLimiter(rate.Limit(5.0/60.0), 10)
 
@@ -135,6 +136,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		{
 			protected.GET("/profile", authHandler.GetProfile)
 			protected.POST("/logout", authHandler.Logout)
+			protected.POST("/upload", fileUploadHandler.Upload)
 
 			// 2FA routes
 			protected.POST("/auth/2fa/setup", authHandler.Setup2FA)

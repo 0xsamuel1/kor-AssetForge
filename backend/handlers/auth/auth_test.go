@@ -52,7 +52,7 @@ func (suite *AuthTestSuite) SetupSuite() {
 		JWTExpirationHours: 24,
 		RefreshTokenHours:  168,
 		EmailTokenHours:    24,
-		PasswordResetHours: 1,
+		PasswordResetMinutes: 30,
 		BcryptCost:         4,
 	}
 

@@ -108,7 +108,7 @@ func main() {
 		JWTExpirationHours: getEnvIntOrDefault("JWT_EXPIRATION_HOURS", 24),
 		RefreshTokenHours:  getEnvIntOrDefault("REFRESH_TOKEN_HOURS", 168),
 		EmailTokenHours:    getEnvIntOrDefault("EMAIL_TOKEN_HOURS", 24),
-		PasswordResetHours: getEnvIntOrDefault("PASSWORD_RESET_HOURS", 1),
+		PasswordResetMinutes: getEnvIntOrDefault("PASSWORD_RESET_HOURS", 30),
 		BcryptCost:         getEnvIntOrDefault("BCRYPT_COST", 12),
 	}
 	emailService := services.NewEmailServiceFromEnv()
