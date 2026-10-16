@@ -1,5 +1,6 @@
 "use client"
 
+import Image from "next/image"
 import { useState, useCallback, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
@@ -153,9 +154,12 @@ export function FileUpload({
   const getFileIcon = (file: FileWithPreview) => {
     if (file.preview) {
       return (
-        <img
+        <Image
           src={file.preview}
           alt={file.name}
+          width={40}
+          height={40}
+          unoptimized
           className="h-10 w-10 rounded object-cover"
         />
       )

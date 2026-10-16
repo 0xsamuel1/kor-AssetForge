@@ -93,9 +93,17 @@ func (c *WSConn) ReadMessage() (OpCode, []byte, error) {
 
 // Close sends a close frame and shuts down the underlying connection.
 func (c *WSConn) Close() {
+	c.CloseWithCode(1000, "")
+}
+
+// CloseWithCode sends a close frame with the RFC 6455 status code.
+func (c *WSConn) CloseWithCode(code uint16, reason string) {
 	if !c.closed {
 		c.closed = true
-		_ = writeFrame(c.conn, OpClose, []byte{})
+		payload := make([]byte, 2+len(reason))
+		binary.BigEndian.PutUint16(payload, code)
+		copy(payload[2:], reason)
+		_ = writeFrame(c.conn, OpClose, payload)
 		c.conn.Close()
 	}
 }

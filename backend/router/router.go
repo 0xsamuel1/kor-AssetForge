@@ -394,7 +394,10 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 	}
 
 	// WebSocket routes
-	wsHandler := handlers.NewWebSocketHandler()
+	wsHandler := handlers.NewWebSocketHandler(
+		getEnvOrDefault("JWT_SECRET", "your-super-secret-jwt-key-change-in-production"),
+		config.LoadWSRateLimitConfig(),
+	)
 	router.GET("/ws", wsHandler.HandleWS)
 	router.GET("/ws/stats", wsHandler.HandleWSStats)
 
