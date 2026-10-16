@@ -121,20 +121,23 @@ func (i *ElasticsearchIndexer) createIndex(ctx context.Context) error {
 						"completion": map[string]interface{}{"type": "completion"},
 					},
 				},
-				"symbol":        map[string]interface{}{"type": "keyword"},
-				"description":   map[string]interface{}{"type": "text", "analyzer": "asset_analyzer"},
-				"asset_type":    map[string]interface{}{"type": "keyword"},
-				"total_supply":  map[string]interface{}{"type": "long"},
-				"fractions":     map[string]interface{}{"type": "long"},
-				"contract_id":   map[string]interface{}{"type": "keyword"},
-				"owner_address": map[string]interface{}{"type": "keyword"},
-				"metadata":      map[string]interface{}{"type": "object", "enabled": false},
-				"image_url":     map[string]interface{}{"type": "keyword"},
-				"document_url":  map[string]interface{}{"type": "keyword"},
-				"verified":      map[string]interface{}{"type": "boolean"},
-				"created_at":    map[string]interface{}{"type": "date"},
-				"updated_at":    map[string]interface{}{"type": "date"},
-				"search_text":   map[string]interface{}{"type": "text", "analyzer": "asset_analyzer"},
+				"symbol":           map[string]interface{}{"type": "keyword"},
+				"description":      map[string]interface{}{"type": "text", "analyzer": "asset_analyzer"},
+				"asset_type":       map[string]interface{}{"type": "keyword"},
+				"total_supply":     map[string]interface{}{"type": "long"},
+				"fractions":        map[string]interface{}{"type": "long"},
+				"contract_id":      map[string]interface{}{"type": "keyword"},
+				"owner_address":    map[string]interface{}{"type": "keyword"},
+				"metadata":         map[string]interface{}{"type": "object", "enabled": false},
+				"image_url":        map[string]interface{}{"type": "keyword"},
+				"document_url":     map[string]interface{}{"type": "keyword"},
+				"verified":         map[string]interface{}{"type": "boolean"},
+				"created_at":       map[string]interface{}{"type": "date"},
+				"updated_at":       map[string]interface{}{"type": "date"},
+				"search_text":      map[string]interface{}{"type": "text", "analyzer": "asset_analyzer"},
+				"categories":       map[string]interface{}{"type": "text", "analyzer": "asset_analyzer", "fields": map[string]interface{}{"keyword": map[string]interface{}{"type": "keyword"}}},
+				"tags":             map[string]interface{}{"type": "text", "analyzer": "asset_analyzer", "fields": map[string]interface{}{"keyword": map[string]interface{}{"type": "keyword"}}},
+				"popularity_score": map[string]interface{}{"type": "double"},
 			},
 		},
 	}
@@ -161,7 +164,7 @@ func (i *ElasticsearchIndexer) assetToDocument(asset *models.Asset) AssetDocumen
 
 	searchText := fmt.Sprintf("%s %s %s %s", asset.Name, asset.Symbol, asset.Description, asset.AssetType)
 
-	return AssetDocument{
+	doc := AssetDocument{
 		ID:           asset.ID,
 		Name:         asset.Name,
 		Symbol:       asset.Symbol,
@@ -179,4 +182,16 @@ func (i *ElasticsearchIndexer) assetToDocument(asset *models.Asset) AssetDocumen
 		UpdatedAt:    asset.UpdatedAt,
 		SearchText:   searchText,
 	}
+	if i.db != nil && asset.ID != 0 {
+		i.db.Model(&models.Category{}).
+			Joins("JOIN asset_categories ON asset_categories.category_id = categories.id").
+			Where("asset_categories.asset_id = ?", asset.ID).Pluck("categories.slug", &doc.Categories)
+		i.db.Model(&models.Tag{}).
+			Joins("JOIN asset_tags ON asset_tags.tag_id = tags.id").
+			Where("asset_tags.asset_id = ?", asset.ID).Pluck("tags.slug", &doc.Tags)
+		var interactions int64
+		i.db.Model(&models.UserInteraction{}).Where("asset_id = ?", asset.ID).Count(&interactions)
+		doc.PopularityScore = float64(interactions)
+	}
+	return doc
 }

@@ -76,6 +76,36 @@
           }
         ],
         "type": "graph"
+      },
+      {
+        "title": "Search Health",
+        "targets": [
+          {
+            "expr": "search_elasticsearch_available",
+            "legendFormat": "Elasticsearch available"
+          }
+        ],
+        "type": "stat"
+      },
+      {
+        "title": "Search Backend Traffic",
+        "targets": [
+          {
+            "expr": "sum(rate(search_backend_requests_total[5m])) by (backend)",
+            "legendFormat": "{{backend}}"
+          }
+        ],
+        "type": "graph"
+      },
+      {
+        "title": "Search Fallbacks",
+        "targets": [
+          {
+            "expr": "sum(rate(search_fallback_total[5m])) by (operation, reason)",
+            "legendFormat": "{{operation}}: {{reason}}"
+          }
+        ],
+        "type": "graph"
       }
     ]
   }

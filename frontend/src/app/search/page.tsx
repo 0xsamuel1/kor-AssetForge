@@ -4,15 +4,15 @@ import { Suspense, useState, useEffect, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Header } from "@/components/Header";
 import { SearchBar } from "@/components/SearchBar";
-import { FilterPanel } from "@/components/FilterPanel";
+import { SearchFilters } from "@/components/SearchFilters";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { assetApi, SearchResult } from "@/lib/asset-api";
-import { formatCurrency, truncateAddress } from "@/lib/utils";
+import { formatCurrency } from "@/lib/utils";
 import { StellarWallet, stellarService } from "@/lib/stellar";
 import {
-  Building2, TrendingUp, TrendingDown, Shield, Star,
+  Building2, TrendingUp, TrendingDown, Shield,
   MapPin, Loader2, Bookmark, BookmarkCheck,
 } from "lucide-react";
 import Link from "next/link";
@@ -64,8 +64,11 @@ function SearchContent() {
   }, []);
 
   useEffect(() => {
-    performSearch(query, filters);
-    updateUrl(query, filters);
+	const timer = window.setTimeout(() => {
+		void performSearch(query, filters);
+		updateUrl(query, filters);
+	}, 0);
+	return () => window.clearTimeout(timer);
   }, [query, filters, performSearch, updateUrl]);
 
   const handleSearch = (q: string) => {
@@ -125,7 +128,7 @@ function SearchContent() {
           {/* Sidebar Filters */}
           <aside className="w-64 shrink-0 hidden lg:block">
             <div className="sticky top-4">
-              <FilterPanel filters={filters} onFiltersChange={handleFiltersChange} />
+              <SearchFilters filters={filters} onFiltersChange={handleFiltersChange} />
             </div>
           </aside>
 

@@ -231,6 +231,8 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		searchHandler := handlers.NewSearchHandler(searchBackend)
 		v1.GET("/search/assets", searchHandler.Search)
 		v1.GET("/search/suggestions", searchHandler.Suggest)
+		v1.GET("/search/autocomplete", searchHandler.Autocomplete)
+		v1.GET("/search/facets", searchHandler.Facets)
 		v1.GET("/search/analytics", searchHandler.SearchAnalytics)
 
 		// KYC / AML routes

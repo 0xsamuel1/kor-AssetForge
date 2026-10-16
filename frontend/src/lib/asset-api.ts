@@ -1,5 +1,3 @@
-import { stellarService } from "@/lib/stellar";
-
 export interface PricePoint {
   timestamp: number;
   price: number;
@@ -122,11 +120,19 @@ export interface SearchResult {
 
 export interface FilterFacet {
   name: string;
+  key: string;
   values: {
     label: string;
     value: string;
     count: number;
   }[];
+}
+
+export interface AutocompleteResult {
+  suggestions: string[];
+  did_you_mean?: string;
+  recent?: string[];
+  popular?: string[];
 }
 
 class AssetApiService {
@@ -167,10 +173,31 @@ class AssetApiService {
   }
 
   async searchAssets(query: string, filters: Record<string, string>): Promise<SearchResult[]> {
-    const params = new URLSearchParams({ q: query, ...filters });
+    const params = new URLSearchParams({ q: query });
+    Object.entries(filters).forEach(([key, value]) => {
+      if (["asset_type", "category", "tag", "location"].includes(key)) {
+        value.split(",").filter(Boolean).forEach((item) => params.append(key, item));
+      } else {
+        params.set(key, value);
+      }
+    });
     const res = await fetch(`${this.backendUrl}/api/v1/search/assets?${params}`);
     if (!res.ok) throw new Error("Failed to search assets");
-    return res.json();
+    const payload = await res.json();
+    const assets = Array.isArray(payload) ? payload : payload.assets || [];
+    return assets.map((asset: Record<string, unknown>) => {
+      let metadata: Record<string, unknown> = {};
+      try {
+        metadata = typeof asset.metadata === "string" ? JSON.parse(asset.metadata) : (asset.metadata as Record<string, unknown>) || {};
+      } catch {}
+      return {
+        id: String(asset.id), name: String(asset.name || ""), symbol: String(asset.symbol || ""),
+        type: String(asset.asset_type || asset.type || ""), price: Number(asset.current_price || asset.price || 0),
+        change24h: Number(asset.change_24h || 0), volume: Number(asset.volume || 0),
+        location: String(metadata.location || asset.location || ""), status: String(asset.status || "active"),
+        verified: Boolean(asset.verified),
+      } satisfies SearchResult;
+    });
   }
 
   async getFilterFacets(): Promise<FilterFacet[]> {
@@ -184,6 +211,12 @@ class AssetApiService {
     if (!res.ok) throw new Error("Failed to fetch suggestions");
     const data = await res.json();
     return data.suggestions;
+  }
+
+  async getAutocomplete(query: string): Promise<AutocompleteResult> {
+    const res = await fetch(`${this.backendUrl}/api/v1/search/autocomplete?q=${encodeURIComponent(query)}`);
+    if (!res.ok) throw new Error("Failed to fetch autocomplete results");
+    return res.json();
   }
 
   async getDashboardData(): Promise<PortfolioData> {
