@@ -124,8 +124,11 @@ func main() {
 
 	// Use custom enhanced middleware
 	router.Use(
+		middleware.TracingMiddleware(),
 		handlers.RequestLogger(),
 		handlers.GlobalErrorHandler(),
+		handlers.MetricsMiddleware(),
+		handlers.BusinessMetricsMiddleware(nil),
 		middleware.RequestSizeLimiter(2<<20),
 		middleware.RequireJSON(),
 		middleware.RateLimit(20, time.Minute),
