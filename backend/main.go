@@ -140,6 +140,8 @@ func main() {
 		handlers.RequestLogger(),
 		middleware.DetectLanguage(), // resolve request language for i18n (#185)
 		handlers.GlobalErrorHandler(),
+		handlers.MetricsMiddleware(),
+		handlers.BusinessMetricsMiddleware(nil),
 		middleware.RequestSizeLimiter(2<<20),
 		middleware.RequireJSON(),
 		middleware.RateLimit(20, time.Minute),
