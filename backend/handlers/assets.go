@@ -621,9 +621,11 @@ func (h *AssetHandler) GetOraclePrice(c *gin.Context) {
 	}
 
 	oracleService := services.NewOraclePriceService()
-	feed, err := oracleService.FetchPrice(symbol)
+	// Strict fetch: rejects stale or unavailable price data instead of serving
+	// a value the contracts would refuse to settle against.
+	feed, err := oracleService.FetchPriceStrict(symbol)
 	if err != nil {
-		apperrors.AbortWithError(c, apperrors.NewExternalServiceError("Failed to fetch price from oracle", err))
+		apperrors.AbortWithError(c, apperrors.NewExternalServiceError("Failed to fetch a fresh price from oracle", err))
 		return
 	}
 
@@ -645,15 +647,15 @@ func (h *AssetHandler) GetAssetOraclePrice(c *gin.Context) {
 	}
 
 	oracleService := services.NewOraclePriceService()
-	feed, err := oracleService.FetchPrice(asset.Symbol)
+	feed, err := oracleService.FetchPriceStrict(asset.Symbol)
 	if err != nil {
-		apperrors.AbortWithError(c, apperrors.NewExternalServiceError("Failed to fetch price from oracle", err))
+		apperrors.AbortWithError(c, apperrors.NewExternalServiceError("Failed to fetch a fresh price from oracle", err))
 		return
 	}
 
 	oracleService.UpdateFeed(asset.ID, feed)
-	staleDuration := 1 * time.Hour
-	isStale := oracleService.IsStale(asset.ID, staleDuration)
+	// Zero means "use the configured threshold" (five minutes by default).
+	isStale := oracleService.IsStale(asset.ID, 0)
 
 	c.JSON(http.StatusOK, gin.H{
 		"asset_id":  asset.ID,
