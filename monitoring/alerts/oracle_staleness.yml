@@ -1,0 +1,57 @@
+groups:
+  - name: oracle-staleness
+    interval: 30s
+    rules:
+      - alert: OracleFeedStale
+        expr: oracle_stale_feed == 1
+        for: 1m
+        labels:
+          severity: critical
+          service: oracle
+        annotations:
+          summary: "Oracle price feed for {{ $labels.symbol }} is stale"
+          description: >
+            No price newer than the five minute threshold has been accepted for
+            {{ $labels.symbol }}. Pricing transactions that need this symbol will
+            fail until a feed recovers. See docs/ORACLE_STALENESS.md.
+
+      - alert: OraclePriceAgeHigh
+        expr: oracle_price_age_seconds > 240
+        for: 2m
+        labels:
+          severity: warning
+          service: oracle
+        annotations:
+          summary: "Oracle price for {{ $labels.symbol }} is approaching staleness"
+          description: >
+            The accepted price for {{ $labels.symbol }} is
+            {{ $value | humanizeDuration }} old, close to the 5m rejection
+            threshold. A missed heartbeat is about to become an outage.
+
+      - alert: OracleAllProvidersStale
+        expr: sum(rate(oracle_requests_total{outcome="stale"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: oracle
+        annotations:
+          summary: "Every configured oracle provider returned stale data"
+          description: >
+            Provider fallbacks are exhausted: {{ $value | humanize }} stale
+            responses in the last five minutes. Pricing is degraded network-wide.
+
+      - alert: OracleProviderErrorRateHigh
+        expr: |
+          sum(rate(oracle_requests_total{outcome=~"error|invalid_price"}[5m])) by (provider)
+          /
+          clamp_min(sum(rate(oracle_requests_total[5m])) by (provider), 0.001)
+          > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: oracle
+        annotations:
+          summary: "Oracle provider {{ $labels.provider }} is failing"
+          description: >
+            More than half of all requests to {{ $labels.provider }} failed over
+            the last five minutes. Traffic is being shifted to fallback providers.
