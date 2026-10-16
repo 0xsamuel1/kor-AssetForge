@@ -21,6 +21,8 @@
     "@tanstack/react-query-devtools": "^5.104.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.9",
     "lucide-react": "^1.11.0",
     "next": "16.2.4",
     "next-intl": "^4.14.9",
