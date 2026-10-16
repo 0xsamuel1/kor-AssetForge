@@ -6,6 +6,7 @@ import { AssetInfo, StellarWallet } from '@/lib/stellar'
 import { formatAmount, truncateAddress } from '@/lib/utils'
 import { Building2, TrendingUp, Eye } from 'lucide-react'
 import Link from 'next/link'
+import { CardGridSkeleton } from '@/components/LoadingSkeleton'
 
 interface AssetGridProps {
   assets: AssetInfo[]
@@ -15,29 +16,7 @@ interface AssetGridProps {
 
 export function AssetGrid({ assets, isLoading, wallet }: AssetGridProps) {
   if (isLoading) {
-    return (
-      <div
-        className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
-        aria-busy="true"
-        aria-label="Loading assets"
-      >
-        {[...Array(6)].map((_, i) => (
-          <Card key={i} className="animate-pulse" aria-hidden="true">
-            <CardHeader>
-              <div className="h-4 bg-muted rounded w-3/4"></div>
-              <div className="h-3 bg-muted rounded w-1/2"></div>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-2">
-                <div className="h-3 bg-muted rounded"></div>
-                <div className="h-3 bg-muted rounded w-2/3"></div>
-                <div className="h-8 bg-muted rounded"></div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-    )
+    return <CardGridSkeleton count={6} label="Loading assets" />
   }
 
   if (assets.length === 0) {

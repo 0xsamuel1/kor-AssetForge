@@ -1,9 +1,13 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
+import "@/styles/forms.css";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ToastContainer } from "@/components/ui/Toast";
 import { OnboardingProvider } from "@/components/onboarding/OnboardingProvider";
+import { ServiceWorkerRegister } from "@/components/pwa/ServiceWorkerRegister";
+import { InstallPrompt } from "@/components/pwa/InstallPrompt";
+import { OfflineIndicator } from "@/components/pwa/OfflineIndicator";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -18,6 +22,22 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "kor-AssetForge",
   description: "Decentralized marketplace for tokenizing and trading real-world assets on Stellar",
+  applicationName: "kor-AssetForge",
+  appleWebApp: {
+    capable: true,
+    title: "AssetForge",
+    statusBarStyle: "default",
+  },
+  icons: {
+    apple: "/apple-touch-icon.png",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#0a0a0a" },
+  ],
 };
 
 import { NextIntlClientProvider } from 'next-intl';
@@ -48,6 +68,9 @@ export default async function RootLayout({
           </ErrorBoundary>
         </NextIntlClientProvider>
         <ToastContainer />
+        <OfflineIndicator />
+        <InstallPrompt />
+        <ServiceWorkerRegister />
       </body>
     </html>
   );

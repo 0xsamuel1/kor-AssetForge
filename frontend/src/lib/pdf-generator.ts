@@ -206,11 +206,13 @@ export async function generatePDF(options: GeneratePDFOptions): Promise<void> {
       headStyles: headStyle,
       alternateRowStyles: { fillColor: [248, 248, 252] },
       styles: { fontSize: 8, cellPadding: 2 },
-      columnStyles: {
-        6: {
-          textColor: (cell: { raw: string | number }) =>
-            String(cell.raw).startsWith("-") ? [220, 38, 38] : [16, 185, 129],
-        },
+      // Colour the G/L column red for losses and green for gains.
+      didParseCell: (data) => {
+        if (data.section === "body" && data.column.index === 6) {
+          data.cell.styles.textColor = String(data.cell.raw).startsWith("-")
+            ? [220, 38, 38]
+            : [16, 185, 129];
+        }
       },
     });
   }

@@ -9,11 +9,13 @@ import { DisputePanel } from "@/components/escrow/DisputePanel";
 import { StellarWallet } from "@/lib/stellar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PlusCircle, List, Gavel } from "lucide-react";
+import { ListSkeleton } from "@/components/LoadingSkeleton";
 
 export default function EscrowPage() {
   const [wallet, setWallet] = useState<StellarWallet | undefined>();
   const [escrows, setEscrows] = useState<EscrowRecord[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const api = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
   const loadEscrows = useCallback(async () => {
@@ -25,6 +27,8 @@ export default function EscrowPage() {
       if (res.ok) setEscrows(await res.json());
     } catch {
       // ignore
+    } finally {
+      setIsLoading(false);
     }
   }, [wallet, api]);
 
@@ -84,7 +88,11 @@ export default function EscrowPage() {
           </TabsList>
 
           <TabsContent value="list">
-            <EscrowList escrows={escrows} wallet={wallet} onUpdated={loadEscrows} />
+            {isLoading ? (
+              <ListSkeleton rows={3} label="Loading escrows" />
+            ) : (
+              <EscrowList escrows={escrows} wallet={wallet} onUpdated={loadEscrows} />
+            )}
           </TabsContent>
 
           {wallet && (

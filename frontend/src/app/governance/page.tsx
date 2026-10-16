@@ -11,6 +11,7 @@ import { StellarWallet } from "@/lib/stellar";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PlusCircle, Vote, Users } from "lucide-react";
+import { ListSkeleton } from "@/components/LoadingSkeleton";
 
 export default function GovernancePage() {
   const [wallet, setWallet] = useState<StellarWallet | undefined>();
@@ -108,7 +109,7 @@ export default function GovernancePage() {
             <div className="grid gap-6 lg:grid-cols-2">
               <div>
                 {isLoading ? (
-                  <p className="text-muted-foreground text-sm">Loading proposals…</p>
+                  <ListSkeleton rows={3} label="Loading proposals" />
                 ) : (
                   <ProposalList
                     proposals={proposals}
