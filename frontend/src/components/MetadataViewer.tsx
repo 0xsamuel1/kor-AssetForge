@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
@@ -49,9 +50,12 @@ export function MetadataViewer({
         <CardContent>
           {metadata.image && (
             <div className="mb-4">
-              <img
+              <Image
                 src={metadata.image}
                 alt={metadata.name}
+                width={640}
+                height={256}
+                sizes="(max-width: 768px) 100vw, 640px"
                 className="w-full max-h-64 object-cover rounded-lg"
                 onError={(e) => {
                   (e.target as HTMLImageElement).src =

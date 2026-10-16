@@ -665,7 +665,10 @@ func main() {
 
 	// WebSocket routes (#54) — outside v1 group so the CSRF/JSON middleware
 	// does not block the Upgrade handshake.
-	wsHandler := handlers.NewWebSocketHandler()
+	wsHandler := handlers.NewWebSocketHandler(
+		getEnvOrDefault("JWT_SECRET", "your-super-secret-jwt-key-change-in-production"),
+		config.LoadWSRateLimitConfig(),
+	)
 	router.GET("/ws", wsHandler.HandleWS)
 	router.GET("/ws/stats", wsHandler.HandleWSStats)
 

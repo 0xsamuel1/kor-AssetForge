@@ -2,6 +2,15 @@ import type { NextConfig } from "next";
 import path from "node:path";
 
 const nextConfig: NextConfig = {
+  images: {
+    formats: ["image/avif", "image/webp"],
+    remotePatterns: [
+      { protocol: "https", hostname: "ipfs.io" },
+      { protocol: "https", hostname: "gateway.pinata.cloud" },
+      { protocol: "https", hostname: "cloudflare-ipfs.com" },
+      { protocol: "https", hostname: "images.unsplash.com" },
+    ],
+  },
   // This is the alias installed by next-intl/plugin. Keeping it explicit
   // avoids loading the plugin's optional native message-extraction toolchain;
   // this application uses runtime JSON catalogs and does not use extraction.
