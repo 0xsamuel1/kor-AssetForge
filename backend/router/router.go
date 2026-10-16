@@ -68,18 +68,20 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 
 	// Setup authentication
 	authConfig := &auth.AuthConfig{
-		JWTSecret:          getEnvOrDefault("JWT_SECRET", "your-super-secret-jwt-key-change-in-production"),
-		JWTExpirationHours: getEnvIntOrDefault("JWT_EXPIRATION_HOURS", 24),
-		RefreshTokenHours:  getEnvIntOrDefault("REFRESH_TOKEN_HOURS", 168),
-		EmailTokenHours:    getEnvIntOrDefault("EMAIL_TOKEN_HOURS", 24),
+		JWTSecret:            getEnvOrDefault("JWT_SECRET", "your-super-secret-jwt-key-change-in-production"),
+		JWTExpirationHours:   getEnvIntOrDefault("JWT_EXPIRATION_HOURS", 24),
+		RefreshTokenHours:    getEnvIntOrDefault("REFRESH_TOKEN_HOURS", 168),
+		EmailTokenHours:      getEnvIntOrDefault("EMAIL_TOKEN_HOURS", 24),
 		PasswordResetMinutes: getEnvIntOrDefault("PASSWORD_RESET_HOURS", 30),
-		BcryptCost:         getEnvIntOrDefault("BCRYPT_COST", 12),
+		BcryptCost:           getEnvIntOrDefault("BCRYPT_COST", 12),
 	}
 	emailService := services.NewEmailServiceFromEnv()
 	authHandler := auth.NewAuthHandler(db, authConfig, emailService)
 	fileUploadHandler := handlers.NewFileUploadHandler()
 	authMiddleware := auth.NewAuthMiddleware(authConfig.JWTSecret)
 	authRateLimiter := auth.NewAuthRateLimiter(rate.Limit(5.0/60.0), 10)
+	registrationConfig := config.LoadRegistrationRateLimitConfig()
+	registrationRateLimiter := auth.NewRegistrationRateLimiter(registrationConfig.MaxPerWindow, registrationConfig.Window)
 
 	// Setup router
 	router := gin.New()
@@ -93,6 +95,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		handlers.RequestLogger(),
 		handlers.GlobalErrorHandler(),
 		middleware.RequestSizeLimiter(2<<20),
+		middleware.SecurityHeaders(config.LoadSecurityHeadersConfig()),
 		middleware.RequireJSON(),
 		middleware.RateLimit(20, time.Minute),
 		middleware.CSRFProtection(os.Getenv("CSRF_SECRET")),
@@ -122,7 +125,7 @@ func SetupRouter(db *gorm.DB) *gin.Engine {
 		authGroup := v1.Group("/auth")
 		authGroup.Use(authRateLimiter.GeneralAuthRateLimit())
 		{
-			authGroup.POST("/register", authRateLimiter.RegisterRateLimit(), authHandler.Register)
+			authGroup.POST("/register", registrationRateLimiter.RegisterRateLimit(), middleware.CaptchaAfter(registrationConfig.CaptchaAfter, registrationConfig.Window), authHandler.Register)
 			authGroup.POST("/login", authRateLimiter.LoginRateLimit(), authHandler.Login)
 			authGroup.POST("/refresh", authHandler.RefreshToken)
 			authGroup.POST("/verify-email", authRateLimiter.EmailVerificationRateLimit(), authHandler.VerifyEmail)
