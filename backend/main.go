@@ -319,6 +319,9 @@ func main() {
 		v1.GET("/batch/:id",
 			middleware.HTTPCache(cacheManager, 1*time.Minute, "kor:batch", nil),
 			assetHandler.GetBatchStatus)
+		v1.POST("/batch/:id/rollback",
+			middleware.InvalidateOnWrite(cacheManager, "kor:asset:*"),
+			assetHandler.RollbackBatch)
 		v1.GET("/batches",
 			assetHandler.ListBatchTransactions)
 
@@ -344,6 +347,7 @@ func main() {
 		v1.GET("/search/autocomplete", searchHandler.Autocomplete)
 		v1.GET("/search/facets", searchHandler.Facets)
 		v1.GET("/search/analytics", searchHandler.SearchAnalytics)
+		v1.POST("/search/analytics/click", searchHandler.RecordSearchClick)
 
 		// Configurable transfer-approval workflow routes (#155).
 		approvalHandler := handlers.NewApprovalHandler(workflowService)

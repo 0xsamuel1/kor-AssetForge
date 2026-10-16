@@ -78,25 +78,27 @@ type Transaction struct {
 
 // BatchTransaction represents a batch of multiple operations
 type BatchTransaction struct {
-	ID              uint           `gorm:"primaryKey" json:"id"`
-	UserID          uint           `gorm:"not null;index" json:"user_id"`
-	User            User           `gorm:"foreignKey:UserID" json:"user,omitempty"`
-	Operations      string         `gorm:"type:jsonb;not null" json:"operations"` // JSON array of operations
-	Status          string         `gorm:"default:'pending'" json:"status"`       // pending, processing, completed, failed, rolled_back
-	TxHash          string         `gorm:"uniqueIndex" json:"tx_hash,omitempty"`
-	ErrorDetails    string         `gorm:"type:text" json:"error_details,omitempty"`
-	GasEstimate     int64          `json:"gas_estimate,omitempty"`
-	CompletedCount  int            `gorm:"default:0" json:"completed_count"`
-	FailedCount     int            `gorm:"default:0" json:"failed_count"`
-	TotalOperations int            `gorm:"not null" json:"total_operations"`
-	RetryCount      int            `gorm:"default:0" json:"retry_count"`
-	MaxRetries      int            `gorm:"default:3" json:"max_retries"`
-	NextRetryAt     *time.Time     `json:"next_retry_at,omitempty"`
-	LastRetryAt     *time.Time     `json:"last_retry_at,omitempty"`
-	IsRetryable     bool           `gorm:"default:true" json:"is_retryable"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
+	ID                        uint           `gorm:"primaryKey" json:"id"`
+	UserID                    uint           `gorm:"not null;index" json:"user_id"`
+	User                      User           `gorm:"foreignKey:UserID" json:"user,omitempty"`
+	Operations                string         `gorm:"type:jsonb;not null" json:"operations"` // JSON array of operations
+	Status                    string         `gorm:"default:'pending'" json:"status"`       // pending, processing, completed, failed, rolled_back
+	TxHash                    string         `gorm:"uniqueIndex" json:"tx_hash,omitempty"`
+	ErrorDetails              string         `gorm:"type:text" json:"error_details,omitempty"`
+	GasEstimate               int64          `json:"gas_estimate,omitempty"`
+	CompletedCount            int            `gorm:"default:0" json:"completed_count"`
+	FailedCount               int            `gorm:"default:0" json:"failed_count"`
+	TotalOperations           int            `gorm:"not null" json:"total_operations"`
+	ProgressPercent           float64        `gorm:"default:0" json:"progress_percent"`
+	EstimatedSecondsRemaining int64          `gorm:"default:0" json:"estimated_seconds_remaining"`
+	OperationResults          string         `gorm:"type:jsonb" json:"operation_results,omitempty"`
+	StartedAt                 *time.Time     `json:"started_at,omitempty"`
+	FinishedAt                *time.Time     `json:"finished_at,omitempty"`
+	RollbackAt                *time.Time     `json:"rollback_at,omitempty"`
+	RollbackDetails           string         `gorm:"type:text" json:"rollback_details,omitempty"`
+	CreatedAt                 time.Time      `json:"created_at"`
+	UpdatedAt                 time.Time      `json:"updated_at"`
+	DeletedAt                 gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 // BatchOperation represents a single operation within a batch

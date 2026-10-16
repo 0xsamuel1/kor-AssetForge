@@ -24,6 +24,7 @@ const (
 	EventTransactionNew   EventType = "transaction.new"
 	EventListingCreated   EventType = "listing.created"
 	EventMarketplaceTrade EventType = "marketplace.trade"
+	EventBatchProgress    EventType = "batch.progress"
 	EventPing             EventType = "ping"
 	EventAuthExpiring     EventType = "auth.expiring"
 )
@@ -102,8 +103,8 @@ type Hub struct {
 }
 
 var (
-	globalHub  *Hub
-	hubOnce    sync.Once
+	globalHub *Hub
+	hubOnce   sync.Once
 )
 
 // GetHub returns the process-wide singleton Hub, starting its run loop once.
