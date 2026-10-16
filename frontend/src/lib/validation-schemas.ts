@@ -1,35 +1,53 @@
 import { z } from "zod"
+import { validationMessages as m } from "@/lib/validation/messages"
 
 const stellarPublicKeyRegex = /^G[A-HJ-NP-Z0-9]{55}$/
 
 export const walletSchema = z.object({
-  publicKey: z.string().regex(stellarPublicKeyRegex, "Invalid Stellar public key"),
+  publicKey: z.string().regex(stellarPublicKeyRegex, m.stellarPublicKey()),
 })
 
 export const assetFormSchema = z.object({
-  name: z.string().min(1, "Asset name is required").max(100, "Asset name too long"),
-  code: z.string().min(1, "Asset code is required").max(12, "Asset code max 12 characters"),
-  description: z.string().max(1000, "Description too long").optional(),
-  totalSupply: z.string().min(1, "Total supply is required").regex(/^\d+(\.\d+)?$/, "Must be a valid number"),
-  issuer: z.string().regex(stellarPublicKeyRegex, "Invalid Stellar public key").optional(),
+  name: z.string().trim().min(1, m.required("Asset name")).max(100, m.tooLong("Asset name", 100)),
+  code: z
+    .string()
+    .trim()
+    .min(1, m.required("Asset code"))
+    .max(12, m.tooLong("Asset code", 12))
+    .regex(/^[A-Za-z0-9]+$/, m.assetCode()),
+  description: z.string().max(1000, m.tooLong("Description", 1000)).optional(),
+  totalSupply: z.string().trim().min(1, m.required("Total supply")).regex(/^\d+(\.\d+)?$/, m.number("Total supply")),
+  // Optional: an empty input means "not provided", not an invalid key.
+  issuer: z.string().regex(stellarPublicKeyRegex, m.stellarPublicKey()).optional().or(z.literal("")),
 })
 
 export const kycSchema = z.object({
-  firstName: z.string().min(1, "First name is required").max(100),
-  lastName: z.string().min(1, "Last name is required").max(100),
-  email: z.string().email("Invalid email address"),
-  phone: z.string().min(1, "Phone number is required").regex(/^\+?[\d\s\-()]{7,20}$/, "Invalid phone number"),
-  country: z.string().min(1, "Country is required"),
-  address: z.string().min(1, "Address is required").max(500),
-  dateOfBirth: z.string().min(1, "Date of birth is required").regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD format"),
-  idType: z.enum(["passport", "drivers_license", "national_id", "other"]),
-  idNumber: z.string().min(1, "ID number is required").max(100),
+  firstName: z.string().trim().min(1, m.required("First name")).max(100, m.tooLong("First name", 100)),
+  lastName: z.string().trim().min(1, m.required("Last name")).max(100, m.tooLong("Last name", 100)),
+  email: z.string().trim().min(1, m.required("Email")).email(m.email()),
+  phone: z.string().trim().min(1, m.required("Phone number")).regex(/^\+?[\d\s\-()]{7,20}$/, m.phone()),
+  country: z.string().trim().min(1, m.required("Country")),
+  address: z.string().trim().min(1, m.required("Address")).max(500, m.tooLong("Address", 500)),
+  dateOfBirth: z.string().min(1, m.required("Date of birth")).regex(/^\d{4}-\d{2}-\d{2}$/, m.date()),
+  idType: z.enum(["passport", "drivers_license", "national_id", "other"], {
+    errorMap: () => ({ message: m.select("an ID type") }),
+  }),
+  idNumber: z.string().trim().min(1, m.required("ID number")).max(100, m.tooLong("ID number", 100)),
 })
 
 export const listingFormSchema = z.object({
-  assetId: z.string().min(1, "Asset is required"),
-  price: z.string().min(1, "Price is required").regex(/^\d+(\.\d{1,7})?$/, "Invalid price"),
-  amount: z.string().min(1, "Amount is required").regex(/^\d+(\.\d+)?$/, "Invalid amount"),
+  assetId: z.string().min(1, m.select("an asset")),
+  price: z
+    .string()
+    .min(1, m.required("Price"))
+    .regex(/^\d+(\.\d+)?$/, m.number("Price"))
+    .regex(/^\d+(\.\d{1,7})?$/, m.decimals("Price", 7))
+    .refine((v) => Number(v) > 0, m.positive("Price")),
+  amount: z
+    .string()
+    .min(1, m.required("Amount"))
+    .regex(/^\d+(\.\d+)?$/, m.number("Amount"))
+    .refine((v) => Number(v) > 0, m.positive("Amount")),
 })
 
 export const searchSchema = z.object({

@@ -1,0 +1,83 @@
+/*
+ * Form validation styling.
+ *
+ * Shared by FormField, FormErrorSummary and FormAlert so every form shows
+ * errors the same way. Colours come from the theme tokens in globals.css,
+ * so light and dark mode both work.
+ */
+
+.form-field-required {
+  margin-left: 0.125rem;
+  color: var(--destructive);
+}
+
+.form-field-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  line-height: 1.25rem;
+  color: var(--destructive);
+  animation: form-error-in 150ms ease-out;
+}
+
+.form-field-error > svg {
+  margin-top: 0.1875rem;
+}
+
+/*
+ * Controls that don't use the shadcn Input (plain textarea/select, Radix
+ * Select trigger) still get the same invalid state.
+ */
+.form-field[data-invalid="true"] :is(textarea, select, button[role="combobox"])[aria-invalid="true"] {
+  border-color: var(--destructive);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--destructive) 20%, transparent);
+}
+
+.form-error-summary {
+  border: 1px solid color-mix(in oklch, var(--destructive) 40%, transparent);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  background: color-mix(in oklch, var(--destructive) 8%, transparent);
+  padding: 0.75rem 1rem;
+  color: var(--destructive);
+  animation: form-error-in 150ms ease-out;
+}
+
+.form-error-summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-error-summary a {
+  color: inherit;
+}
+
+.form-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: var(--radius);
+  background: color-mix(in oklch, var(--destructive) 10%, transparent);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  color: var(--destructive);
+}
+
+@keyframes form-error-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .form-field-error,
+  .form-error-summary {
+    animation: none;
+  }
+}
