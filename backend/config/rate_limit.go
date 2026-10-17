@@ -14,6 +14,21 @@ type EmailRateLimitConfig struct {
 	Window       time.Duration
 }
 
+// RegistrationRateLimitConfig controls registration abuse protection.
+type RegistrationRateLimitConfig struct {
+	MaxPerWindow int
+	Window       time.Duration
+	CaptchaAfter int
+}
+
+func LoadRegistrationRateLimitConfig() RegistrationRateLimitConfig {
+	return RegistrationRateLimitConfig{
+		MaxPerWindow: envInt("REGISTRATION_MAX_PER_HOUR", 5),
+		Window:       envDuration("REGISTRATION_WINDOW", time.Hour),
+		CaptchaAfter: envInt("REGISTRATION_CAPTCHA_AFTER", 3),
+	}
+}
+
 // LoadEmailRateLimitConfig reads verification email limits from the environment.
 //
 // EMAIL_VERIFICATION_MAX_PER_HOUR  max verification emails per window, default 3

@@ -144,6 +144,30 @@ spec:
       port: 80
       targetPort: http
 ---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: assetforge-api
+  namespace: assetforge
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [api.assetforge.example.com]
+      secretName: assetforge-api-tls
+  rules:
+    - host: api.assetforge.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: assetforge-api
+                port:
+                  name: http
+---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

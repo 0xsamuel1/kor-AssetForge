@@ -28,12 +28,12 @@ import (
 
 // AuthConfig holds authentication configuration
 type AuthConfig struct {
-	JWTSecret          string
-	JWTExpirationHours int
-	RefreshTokenHours  int
-	EmailTokenHours    int
+	JWTSecret            string
+	JWTExpirationHours   int
+	RefreshTokenHours    int
+	EmailTokenHours      int
 	PasswordResetMinutes int
-	BcryptCost         int
+	BcryptCost           int
 }
 
 // AuthHandler handles authentication operations
@@ -46,11 +46,11 @@ type AuthHandler struct {
 }
 
 // NewAuthHandler creates a new auth handler
-func NewAuthHandler(db *gorm.DB, config *AuthConfig, emailService services.EmailService) *AuthHandler {
+func NewAuthHandler(db *gorm.DB, authConfig *AuthConfig, emailService services.EmailService) *AuthHandler {
 	emailRateCfg := config.LoadEmailRateLimitConfig()
 	return &AuthHandler{
 		db:               db,
-		config:           config,
+		config:           authConfig,
 		emailService:     emailService,
 		authService:      services.NewAuthService(db, emailService),
 		emailRateLimiter: services.NewEmailRateLimiter(emailRateCfg.MaxPerWindow, emailRateCfg.Window),

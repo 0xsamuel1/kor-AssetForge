@@ -29,7 +29,7 @@ func openServiceTestDB(t *testing.T) *gorm.DB {
 
 func createServiceUser(t *testing.T, db *gorm.DB, email string) models.User {
 	t.Helper()
-	require.NoError(t, db.Where("email = ?", email).Delete(&models.User{}))
+	require.NoError(t, db.Where("email = ?", email).Delete(&models.User{}).Error)
 	user := models.User{Email: email, StellarAddress: "GTEST" + email, Username: "u_" + email}
 	require.NoError(t, db.Create(&user).Error)
 	return user
