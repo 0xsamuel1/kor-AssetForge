@@ -78,6 +78,10 @@ github.com/containerd/errdefs v1.0.0 h1:tg5yIfIlQIrxYtu9ajqY42W3lpS19XqdxRQeEwYG
 github.com/containerd/errdefs v1.0.0/go.mod h1:+YBYIdtsnF4Iw6nWZhJcqGSg/dwvV7tyJ/kCkyJ2k+M=
 github.com/containerd/errdefs/pkg v0.3.0 h1:9IKJ06FvyNlexW690DXuQNx2KA2cUJXx151Xdx3ZPPE=
 github.com/containerd/errdefs/pkg v0.3.0/go.mod h1:NJw6s9HwNuRhnjJhM7pylWwMyAkmCQvQ4GpJHEqRLVk=
+github.com/creachadair/jrpc2 v1.2.0 h1:SXr0OgnwM0X18P+HccJP0uT3KGSDk/BCSRlJBvE2bMY=
+github.com/creachadair/jrpc2 v1.2.0/go.mod h1:66uKSdr6tR5ZeNvkIjDSbbVUtOv0UhjS/vcd8ECP7Iw=
+github.com/creachadair/mds v0.13.4 h1:RgU0MhiVqkzp6/xtNWhK6Pw7tDeaVuGFtA0UA2RBYvY=
+github.com/creachadair/mds v0.13.4/go.mod h1:4vrFYUzTXMJpMBU+OA292I6IUxKWCCfZkgXg+/kBZMo=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
