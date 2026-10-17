@@ -3,10 +3,10 @@ package handlers
 import (
 	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yourusername/kor-assetforge/services"
+	"github.com/yourusername/kor-assetforge/utils"
 	"gorm.io/gorm"
 )
 
@@ -97,12 +97,12 @@ func (h *ReferralHandler) ListReferrals(c *gin.Context) {
 // tiered rewards. Admin-only.
 // POST /api/v1/admin/referrals/:refereeId/qualify
 func (h *ReferralHandler) QualifyReferral(c *gin.Context) {
-	refereeID, err := strconv.ParseUint(c.Param("refereeId"), 10, 32)
+	refereeID, err := utils.ParseUintParam(c.Param("refereeId"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid referee id"})
 		return
 	}
-	referral, err := h.Service.QualifyReferral(uint(refereeID))
+	referral, err := h.Service.QualifyReferral(refereeID)
 	if err != nil {
 		c.JSON(referralErrorStatus(err), gin.H{"error": err.Error()})
 		return

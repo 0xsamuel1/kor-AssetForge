@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/yourusername/kor-assetforge/models"
 	"github.com/yourusername/kor-assetforge/services"
+	"github.com/yourusername/kor-assetforge/utils"
 	"gorm.io/gorm"
 )
 
@@ -283,7 +284,7 @@ func (h *EmailTemplateHandler) Preview(c *gin.Context) {
 // CreateVariant adds an A/B testing variant to a template.
 // POST /api/v1/admin/email-templates/:id/variants
 func (h *EmailTemplateHandler) CreateVariant(c *gin.Context) {
-	templateID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	templateID, err := utils.ParseUintParam(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid template id"})
 		return
@@ -315,7 +316,7 @@ func (h *EmailTemplateHandler) CreateVariant(c *gin.Context) {
 	}
 
 	variant := models.EmailTemplateVariant{
-		TemplateID: uint(templateID),
+		TemplateID: templateID,
 		Name:       req.Name,
 		Subject:    req.Subject,
 		BodyHTML:   req.BodyHTML,
@@ -370,7 +371,7 @@ func (h *EmailTemplateHandler) RenderTemplate(c *gin.Context) {
 // A new version record is appended so the rollback itself is audited.
 // POST /api/v1/admin/email-templates/:id/versions/:version/rollback
 func (h *EmailTemplateHandler) RollbackToVersion(c *gin.Context) {
-	templateID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	templateID, err := utils.ParseUintParam(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid template id"})
 		return
@@ -386,7 +387,7 @@ func (h *EmailTemplateHandler) RollbackToVersion(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&req) // note is optional
 
-	result, err := h.Versioning.RollbackToVersion(uint(templateID), targetVersion, currentUserID(c), req.ChangeNote)
+	result, err := h.Versioning.RollbackToVersion(templateID, targetVersion, currentUserID(c), req.ChangeNote)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -397,7 +398,7 @@ func (h *EmailTemplateHandler) RollbackToVersion(c *gin.Context) {
 // DiffVersions returns a structural diff between two version snapshots.
 // GET /api/v1/admin/email-templates/:id/versions/diff?from=1&to=2
 func (h *EmailTemplateHandler) DiffVersions(c *gin.Context) {
-	templateID, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	templateID, err := utils.ParseUintParam(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid template id"})
 		return
@@ -413,7 +414,7 @@ func (h *EmailTemplateHandler) DiffVersions(c *gin.Context) {
 		return
 	}
 
-	diff, err := h.Versioning.DiffVersions(uint(templateID), fromVersion, toVersion)
+	diff, err := h.Versioning.DiffVersions(templateID, fromVersion, toVersion)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return

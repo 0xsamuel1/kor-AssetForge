@@ -3,11 +3,11 @@ package handlers
 import (
 	"errors"
 	"net/http"
-	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/yourusername/kor-assetforge/models"
 	"github.com/yourusername/kor-assetforge/services"
+	"github.com/yourusername/kor-assetforge/utils"
 	"gorm.io/gorm"
 )
 
@@ -78,14 +78,14 @@ func (h *GDPRHandler) GetDataExportStatus(c *gin.Context) {
 	userID := userIDVal.(uint)
 
 	idStr := c.Param("id")
-	jobID, err := strconv.ParseUint(idStr, 10, 32)
+	jobID, err := utils.ParseUintParam(idStr)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid job ID"})
 		return
 	}
 
 	var job models.ExportJob
-	if err := h.db.Where("id = ? AND user_id = ?", uint(jobID), userID).First(&job).Error; err != nil {
+	if err := h.db.Where("id = ? AND user_id = ?", jobID, userID).First(&job).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Export job not found"})
 			return
