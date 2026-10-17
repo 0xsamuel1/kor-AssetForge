@@ -11,6 +11,8 @@ import (
 // tests), the AML service falls back to a local no-op provider -- see
 // services.NewAMLScreeningProvider.
 type ComplianceConfig struct {
+	// AuditRetentionYears is the minimum regulatory retention period.
+	AuditRetentionYears int
 	// Provider selects the AML screening vendor. Supported: "complyadvantage".
 	// Empty means "no real provider configured" -- never silently treat
 	// that as "cleared".
@@ -44,6 +46,7 @@ func LoadComplianceConfig() ComplianceConfig {
 	}
 
 	return ComplianceConfig{
+		AuditRetentionYears: 7,
 		Provider:       strings.ToLower(os.Getenv("AML_PROVIDER")),
 		APIKey:         os.Getenv("AML_PROVIDER_API_KEY"),
 		BaseURL:        os.Getenv("AML_PROVIDER_BASE_URL"),

@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin/binding"
 	validatorpkg "github.com/go-playground/validator/v10"
 	"github.com/stellar/go/keypair"
+	"github.com/yourusername/kor-assetforge/utils"
 )
 
 var validate *validatorpkg.Validate
@@ -104,7 +105,7 @@ func sanitizeValue(v reflect.Value) {
 		}
 	case reflect.String:
 		if v.CanSet() {
-			v.SetString(SanitizeString(v.String()))
+			v.SetString(utils.SanitizeUserContent(strings.TrimSpace(v.String())))
 		}
 	}
 }

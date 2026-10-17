@@ -411,3 +411,85 @@ impl AccessControl {
         env.storage().instance().get(&RbacKey::GrantCounter).unwrap_or(0)
     }
 }
+
+#[cfg(test)]
+mod rbac_unit_tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    fn setup() -> (Env, Address, AccessControlClient<'static>) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register_contract(None, AccessControl);
+        let client = AccessControlClient::new(&env, &contract_id);
+        client.initialize(&admin);
+        (env, admin, client)
+    }
+
+    #[test]
+    fn initialize_grants_admin_role() {
+        let (_env, admin, client) = setup();
+        assert!(client.has_role(&admin, &(Role::Admin as u32)));
+        assert_eq!(client.get_highest_role_value(&admin), 100);
+    }
+
+    #[test]
+    fn grant_and_revoke_operator_role() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+
+        client.grant_role(&admin, &user, &(Role::Operator as u32), &None);
+        assert!(client.has_role(&user, &(Role::Operator as u32)));
+
+        client.revoke_role(&admin, &user, &(Role::Operator as u32));
+        assert!(!client.has_role(&user, &(Role::Operator as u32)));
+    }
+
+    #[test]
+    fn grant_counter_increments() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+
+        let before = client.get_grant_count();
+        client.grant_role(&admin, &user, &(Role::Trader as u32), &None);
+        assert_eq!(client.get_grant_count(), before + 1);
+    }
+
+    #[test]
+    fn expired_role_is_not_active() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+
+        client.grant_role(&admin, &user, &(Role::Trader as u32), &Some(10));
+        assert!(client.has_role(&user, &(Role::Trader as u32)));
+
+        env.ledger().with_mut(|li| li.timestamp += 100);
+        assert!(!client.has_role(&user, &(Role::Trader as u32)));
+    }
+
+    #[test]
+    fn role_members_are_tracked() {
+        let (env, admin, client) = setup();
+        let user = Address::generate(&env);
+
+        client.grant_role(&admin, &user, &(Role::Operator as u32), &None);
+        let members = client.get_role_members(&(Role::Operator as u32));
+        assert_eq!(members.len(), 1);
+    }
+
+    #[test]
+    fn role_helpers_are_consistent() {
+        assert_eq!(Role::from_u32(0), Some(Role::Admin));
+        assert_eq!(Role::from_u32(999), None);
+        assert!(Role::Admin.can_grant_roles());
+        assert!(!Role::Trader.can_grant_roles());
+        assert!(Role::EmergencyResponder.can_revoke_roles());
+    }
+
+    #[test]
+    fn grant_count_zero_before_grant() {
+        let (_env, _admin, client) = setup();
+        assert_eq!(client.get_grant_count(), 0);
+    }
+}

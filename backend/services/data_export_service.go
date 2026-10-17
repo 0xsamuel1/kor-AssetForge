@@ -198,11 +198,27 @@ func (s *DataExportService) processExport(jobID uint) {
 }
 
 type exportPayload struct {
-	User         models.User          `json:"user"`
-	KYCRecord    *models.KYCRecord    `json:"kyc_record,omitempty"`
-	Balances     []models.UserBalance `json:"balances"`
-	Listings     []models.Listing     `json:"listings"`
-	Transactions []models.Transaction `json:"transactions"`
+	User                  models.User                    `json:"user"`
+	KYCRecord             *models.KYCRecord              `json:"kyc_record,omitempty"`
+	Balances              []models.UserBalance           `json:"balances"`
+	Listings              []models.Listing               `json:"listings"`
+	Transactions          []models.Transaction           `json:"transactions"`
+	Sessions              []models.UserSession           `json:"sessions"`
+	RecoveryCodes         []models.RecoveryCode          `json:"recovery_codes"`
+	ComplianceAuditLogs   []models.ComplianceAuditLog    `json:"compliance_audit_logs"`
+	AuditLogs             []models.AuditLog              `json:"audit_logs"`
+	ExportJobs            []models.ExportJob             `json:"export_jobs"`
+	UserConsents          []models.UserConsent            `json:"user_consents"`
+	UserActivities        []models.UserActivity           `json:"user_activities"`
+	Comparisons           []models.ComparisonHistory      `json:"comparisons"`
+	ReferralCode          *models.ReferralCode            `json:"referral_code,omitempty"`
+	Referrals             []models.Referral                `json:"referrals"`
+	ReferralRewards       []models.ReferralReward          `json:"referral_rewards"`
+	Notifications         []models.Notification            `json:"notifications"`
+	NotificationPrefs     []models.NotificationPreference  `json:"notification_preferences"`
+	UserInteractions      []models.UserInteraction         `json:"user_interactions"`
+	UserPreferences       []models.UserPreference          `json:"user_preferences"`
+	AssetRecommendations  []models.AssetRecommendation     `json:"asset_recommendations"`
 }
 
 func (s *DataExportService) gatherUserData(userID uint) (*exportPayload, error) {
@@ -218,21 +234,53 @@ func (s *DataExportService) gatherUserData(userID uint) (*exportPayload, error) 
 	}
 
 	var balances []models.UserBalance
-	s.db.Where("user_id = ?", userID).Find(&balances)
+	if err := s.findUserRecords(&models.UserBalance{}, &balances, userID); err != nil {
+		return nil, err
+	}
 
 	var listings []models.Listing
-	s.db.Where("seller_address = ?", user.StellarAddress).Find(&listings)
+	if err := s.db.Where("seller_address = ?", user.StellarAddress).Find(&listings).Error; err != nil {
+		return nil, err
+	}
 
 	var transactions []models.Transaction
-	s.db.Where("from_address = ? OR to_address = ?", user.StellarAddress, user.StellarAddress).Find(&transactions)
+	if err := s.db.Where("from_address = ? OR to_address = ?", user.StellarAddress, user.StellarAddress).Find(&transactions).Error; err != nil {
+		return nil, err
+	}
 
-	return &exportPayload{
-		User:         user,
-		KYCRecord:    kycPtr,
-		Balances:     balances,
-		Listings:     listings,
-		Transactions: transactions,
-	}, nil
+	payload := &exportPayload{User: user, KYCRecord: kycPtr, Balances: balances, Listings: listings, Transactions: transactions}
+	if err := s.findUserRecords(&models.UserSession{}, &payload.Sessions, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.RecoveryCode{}, &payload.RecoveryCodes, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.ComplianceAuditLog{}, &payload.ComplianceAuditLogs, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.AuditLog{}, &payload.AuditLogs, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.ExportJob{}, &payload.ExportJobs, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.UserConsent{}, &payload.UserConsents, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.UserActivity{}, &payload.UserActivities, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.ComparisonHistory{}, &payload.Comparisons, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.Referral{}, &payload.Referrals, userID, "referrer_id = ? OR referee_id = ?", userID, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.ReferralReward{}, &payload.ReferralRewards, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.Notification{}, &payload.Notifications, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.NotificationPreference{}, &payload.NotificationPrefs, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.UserInteraction{}, &payload.UserInteractions, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.UserPreference{}, &payload.UserPreferences, userID); err != nil { return nil, err }
+	if err := s.findUserRecords(&models.AssetRecommendation{}, &payload.AssetRecommendations, userID); err != nil { return nil, err }
+	var referralCode models.ReferralCode
+	if err := s.findUserRecords(&models.ReferralCode{}, &[]models.ReferralCode{referralCode}, userID); err == nil {
+		if s.db.Where("user_id = ?", userID).First(&referralCode).Error == nil { payload.ReferralCode = &referralCode }
+	}
+
+	return payload, nil
+}
+
+func (s *DataExportService) findUserRecords(model, destination interface{}, userID uint, condition ...interface{}) error {
+	if !s.db.Migrator().HasTable(model) {
+		return nil
+	}
+	query := s.db.Where("user_id = ?", userID)
+	if len(condition) > 0 {
+		query = s.db.Where(condition[0], condition[1:]...)
+	}
+	return query.Find(destination).Error
 }
 
 func (s *DataExportService) serializeJSON(payload *exportPayload) ([]byte, error) {
@@ -261,6 +309,20 @@ func (s *DataExportService) serializeCSVZip(payload *exportPayload) ([]byte, err
 		payload.User.CreatedAt.Format(time.RFC3339),
 	})
 	wProfile.Flush()
+
+	// Keep CSV exports self-contained: data.json carries every personal-data
+	// section even when a model does not have a natural tabular CSV shape.
+	fData, err := zipWriter.Create("data.json")
+	if err != nil {
+		return nil, err
+	}
+	serialized, err := s.serializeJSON(payload)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := fData.Write(serialized); err != nil {
+		return nil, err
+	}
 
 	// 2. Balances CSV
 	fBalances, err := zipWriter.Create("balances.csv")

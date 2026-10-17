@@ -1,6 +1,6 @@
 import create from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Keypair } from '@stellar/js-sdk';
+import { Keypair } from '@stellar/stellar-sdk';
 import api from '../services/api';
 
 interface Wallet {

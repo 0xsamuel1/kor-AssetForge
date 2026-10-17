@@ -1,5 +1,8 @@
 # kor-AssetForge
 
+[![CI](https://github.com/parkerwinner/kor-AssetForge/actions/workflows/ci.yml/badge.svg)](https://github.com/parkerwinner/kor-AssetForge/actions/workflows/ci.yml)
+![Backend coverage](https://img.shields.io/badge/backend%20coverage-tracked-blue)
+
 A decentralized marketplace for tokenizing and trading real-world assets (RWAs) on the Stellar network using Soroban smart contracts.
 
 ## Overview
